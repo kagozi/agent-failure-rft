@@ -79,7 +79,7 @@ index 81972b1e..937c64cf 100644
  
  
 diff --git a/mm_agents/agent.py b/mm_agents/agent.py
-index 592e4c40..4cce56cd 100644
+index 592e4c40..44b4629b 100644
 --- a/mm_agents/agent.py
 +++ b/mm_agents/agent.py
 @@ -263,6 +263,7 @@ class PromptAgent:
@@ -90,7 +90,7 @@ index 592e4c40..4cce56cd 100644
  
          if observation_type == "screenshot":
              if action_space == "computer_13":
-@@ -581,6 +582,81 @@ class PromptAgent:
+@@ -581,6 +582,88 @@ class PromptAgent:
      )
      def call_llm(self, payload):
  
@@ -113,13 +113,20 @@ index 592e4c40..4cce56cd 100644
 +            # rather than raising), so without an explicit retry loop a
 +            # single transient 5xx burns an entire agent step with no
 +            # recovery attempt. Confirmed 2026-09-15: this silently wasted
-+            # 13 consecutive steps in one run, which would corrupt a
-+            # failure taxonomy by mislabeling API infra noise as agent
-+            # capability failure.
-+            for attempt in range(3):
++            # 13 consecutive steps in one run (a fast-failing 3-attempt
++            # budget), and separately rode out only part of a real ~4-minute
++            # NRP-side 500 outage. Escalating backoff (5/10/20/40/60/60s,
++            # ~3min total) covers most transient blips without making a
++            # single step hang indefinitely against a truly dead endpoint --
++            # a multi-minute outage that outlasts this budget is a real
++            # infra event, not something to paper over with unbounded
++            # retries; it should show up as a distinct category in the
++            # failure taxonomy rather than be silently absorbed here.
++            backoff_schedule = [5, 10, 20, 40, 60, 60]
++            for attempt in range(len(backoff_schedule)):
 +                logger.info(
-+                    "Generating content with NRP-hosted model: %s (attempt %d)",
-+                    nrp_payload['model'], attempt + 1,
++                    "Generating content with NRP-hosted model: %s (attempt %d/%d)",
++                    nrp_payload['model'], attempt + 1, len(backoff_schedule),
 +                )
 +                response = requests.post(api_url, headers=headers, json=nrp_payload)
 +
@@ -128,7 +135,7 @@ index 592e4c40..4cce56cd 100644
 +                        "Failed to call NRP LLM (HTTP %d): %s",
 +                        response.status_code, response.text,
 +                    )
-+                    time.sleep(5)
++                    time.sleep(backoff_schedule[attempt])
 +                    continue
 +
 +                response_json = response.json()
@@ -164,8 +171,8 @@ index 592e4c40..4cce56cd 100644
 +                return content
 +
 +            logger.error(
-+                "Giving up on NRP LLM call for model %s after 3 attempts.",
-+                payload['model'],
++                "Giving up on NRP LLM call for model %s after %d attempts.",
++                payload['model'], len(backoff_schedule),
 +            )
 +            return ""
 +
