@@ -25,6 +25,85 @@ index 9f975693..b9c89efe 100644
 +        return KubeVirtVMManager(), KubeVirtProvider(region)
      else:
          raise NotImplementedError(f"{provider_name} not implemented!")
+diff --git a/evaluation_examples/test_pilot.json b/evaluation_examples/test_pilot.json
+new file mode 100644
+index 00000000..2bc27ef4
+--- /dev/null
++++ b/evaluation_examples/test_pilot.json
+@@ -0,0 +1,72 @@
++{
++  "chrome": [
++    "030eeff7-b492-4218-b312-701ec99ee0cc",
++    "2ae9ba84-3a0d-4d4c-8338-3a1478dc5fe3",
++    "7b6c7e24-c58a-49fc-a5bb-d57b80e5b4c3",
++    "ae78f875-5b98-4907-bbb5-9c737fc68c03",
++    "b070486d-e161-459b-aa2b-ef442d973b92"
++  ],
++  "gimp": [
++    "2e6f678f-472d-4c55-99cc-8e7c5c402a71",
++    "a746add2-cab0-4740-ac36-c3769d9bfb46",
++    "d52d6308-ec58-42b7-a2c9-de80e4837b2b",
++    "f4aec372-4fb0-4df5-a52b-79e0e2a5d6ce"
++  ],
++  "libreoffice_calc": [
++    "1d17d234-e39d-4ed7-b46f-4417922a4e7c",
++    "21df9241-f8d7-4509-b7f1-37e501a823f7",
++    "3aaa4e37-dc91-482e-99af-132a612d40f3",
++    "4172ea6e-6b77-4edb-a9cc-c0014bd1603b",
++    "51719eea-10bc-4246-a428-ac7c433dd4b3",
++    "a01fbce3-2793-461f-ab86-43680ccbae25"
++  ],
++  "libreoffice_impress": [
++    "2cd43775-7085-45d8-89fa-9e35c0a915cf",
++    "550ce7e7-747b-495f-b122-acdc4d0b8e54",
++    "7ae48c60-f143-4119-b659-15b8f485eb9a",
++    "ac9bb6cb-1888-43ab-81e4-a98a547918cd",
++    "ef9d12bd-bcee-4ba0-a40e-918400f43ddf",
++    "f23acfd2-c485-4b7c-a1e7-d4303ddfe864"
++  ],
++  "libreoffice_writer": [
++    "0810415c-bde4-4443-9047-d5f70165a697",
++    "4bcb1253-a636-4df4-8cb0-a35c04dfef31",
++    "bb8ccc78-479f-4a2f-a71e-d565e439436b",
++    "d53ff5ee-3b1a-431e-b2be-30ed2673079b"
++  ],
++  "multi_apps": [
++    "09a37c51-e625-49f4-a514-20a773797a8a",
++    "2b9493d7-49b8-493a-a71b-56cd1f4d6908",
++    "3c8f201a-009d-4bbe-8b65-a6f8b35bb57f",
++    "69acbb55-d945-4927-a87b-8480e1a5bb7e",
++    "716a6079-22da-47f1-ba73-c9d58f986a38",
++    "9f3bb592-209d-43bc-bb47-d77d9df56504",
++    "c2751594-0cd5-4088-be1b-b5f2f9ec97c4",
++    "da922383-bfa4-4cd3-bbad-6bebab3d7742",
++    "deec51c9-3b1e-4b9e-993c-4776f20e8bb2"
++  ],
++  "os": [
++    "13584542-872b-42d8-b299-866967b5c3ef",
++    "28cc3b7e-b194-4bc9-8353-d04c0f4d56d2",
++    "3ce045a0-877b-42aa-8d2c-b4a863336ab8",
++    "4d117223-a354-47fb-8b45-62ab1390a95f"
++  ],
++  "thunderbird": [
++    "3f28fe4f-5d9d-4994-a456-efd78cfae1a3",
++    "5203d847-2572-4150-912a-03f062254390",
++    "7b1e1ff9-bb85-49be-b01d-d6424be18cd0",
++    "9bc3cc16-074a-45ac-9bdc-b2a362e1daf3"
++  ],
++  "vlc": [
++    "8ba5ae7a-5ae5-4eab-9fcc-5dd4fe3abf89",
++    "8d9fd4e2-6fdb-46b0-b9b9-02f06495c62f",
++    "8f080098-ddb1-424c-b438-4e96e5e4786e",
++    "bba3381f-b5eb-4439-bd9e-80c22218d5a7"
++  ],
++  "vs_code": [
++    "53ad5833-3455-407b-bbc6-45b4c79ab8fb",
++    "5e2d93d8-8ad0-4435-b150-1692aacaa994",
++    "7aeae0e2-70ee-4705-821d-1bba5d5b2ddd",
++    "930fdb3b-11a8-46fe-9bac-577332e2640e"
++  ]
++}
+\ No newline at end of file
 diff --git a/evaluation_examples/test_smoke.json b/evaluation_examples/test_smoke.json
 new file mode 100644
 index 00000000..c582cb94
@@ -192,10 +271,17 @@ index 592e4c40..c941e6b0 100644
  
              # .env config example :
 diff --git a/run.py b/run.py
-index c24c3ada..10979214 100644
+index c24c3ada..c92cc8ba 100644
 --- a/run.py
 +++ b/run.py
-@@ -13,7 +13,7 @@ from tqdm import tqdm
+@@ -7,13 +7,14 @@ import datetime
+ import json
+ import logging
+ import os
++import signal
+ import sys
+ 
+ from tqdm import tqdm
  
  import lib_run_single
  from desktop_env.desktop_env import DesktopEnv
@@ -204,7 +290,7 @@ index c24c3ada..10979214 100644
  
  # Almost deprecated since it's not multi-env, use run_multienv_*.py instead
  
-@@ -148,7 +148,8 @@ def test(args: argparse.Namespace, test_all_meta: dict) -> None:
+@@ -148,7 +149,8 @@ def test(args: argparse.Namespace, test_all_meta: dict) -> None:
          "result_dir": args.result_dir,
      }
  
@@ -214,3 +300,26 @@ index c24c3ada..10979214 100644
          model=args.model,
          max_tokens=args.max_tokens,
          top_p=args.top_p,
+@@ -170,6 +172,22 @@ def test(args: argparse.Namespace, test_all_meta: dict) -> None:
+         vm_secret_mounts=args.vm_secret_mount,
+     )
+ 
++    # Without this, an external kill (k8s job cancellation/timeout, pod
++    # eviction, manual `kubectl delete job`) leaves the VM running --
++    # confirmed 2026-09-16, had to manually clean up an orphaned VMI after
++    # cancelling a stuck job. SIGTERM doesn't run Python's normal cleanup
++    # paths on its own, so this has to be explicit for a multi-hour
++    # unattended pilot batch.
++    def _cleanup_on_terminate(signum, frame):
++        logger.warning("Received signal %d, closing environment before exit.", signum)
++        try:
++            env.close()
++        except Exception as e:
++            logger.error("Error closing environment during signal cleanup: %s", e)
++        sys.exit(1)
++
++    signal.signal(signal.SIGTERM, _cleanup_on_terminate)
++
+     for domain in tqdm(test_all_meta, desc="Domain"):
+         for example_id in tqdm(test_all_meta[domain], desc="Example", leave=False):
+             config_file = os.path.join(

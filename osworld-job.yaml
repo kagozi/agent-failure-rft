@@ -75,7 +75,7 @@ spec:
               --max_tokens 4096
               --max_steps 15
               --max_trajectory_length 1
-              --test_all_meta_path evaluation_examples/test_smoke.json
+              --test_all_meta_path evaluation_examples/test_pilot.json
               --result_dir /trajectories
           env:
             - name: KUBEVIRT_NAMESPACE
