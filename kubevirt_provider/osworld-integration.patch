@@ -79,10 +79,18 @@ index 81972b1e..937c64cf 100644
  
  
 diff --git a/mm_agents/agent.py b/mm_agents/agent.py
-index 592e4c40..1a3a8181 100644
+index 592e4c40..4cce56cd 100644
 --- a/mm_agents/agent.py
 +++ b/mm_agents/agent.py
-@@ -581,6 +581,72 @@ class PromptAgent:
+@@ -263,6 +263,7 @@ class PromptAgent:
+         self.thoughts = []
+         self.actions = []
+         self.observations = []
++        self.last_served_model = None
+ 
+         if observation_type == "screenshot":
+             if action_space == "computer_13":
+@@ -581,6 +582,81 @@ class PromptAgent:
      )
      def call_llm(self, payload):
  
@@ -123,7 +131,16 @@ index 592e4c40..1a3a8181 100644
 +                    time.sleep(5)
 +                    continue
 +
-+                message = response.json()['choices'][0]['message']
++                response_json = response.json()
++                # NRP's docs note models are "added and retired as the
++                # open-weights frontier moves" -- our requested alias
++                # ("qwen3") isn't a pinned checkpoint, so the actual served
++                # model string (e.g. "Qwen/Qwen3.8-Flash-Next-FP8") is what
++                # keeps results attributable if NRP swaps the backing
++                # checkpoint later. Exposed as an attribute so
++                # InstrumentedAgent can log it per-step.
++                self.last_served_model = response_json.get('model')
++                message = response_json['choices'][0]['message']
 +                content = message.get('content')
 +                if content is None:
 +                    # NRP's qwen3 is a reasoning model: chain-of-thought goes
@@ -139,7 +156,7 @@ index 592e4c40..1a3a8181 100644
 +                        "-- likely ran out of max_tokens mid-reasoning. "
 +                        "reasoning=%r",
 +                        nrp_payload['model'],
-+                        response.json()['choices'][0].get('finish_reason'),
++                        response_json['choices'][0].get('finish_reason'),
 +                        (message.get('reasoning') or '')[:500],
 +                    )
 +                    nrp_payload['max_tokens'] = min(nrp_payload.get('max_tokens', 1500) * 2, 8192)

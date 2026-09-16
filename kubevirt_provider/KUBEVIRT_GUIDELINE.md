@@ -191,10 +191,21 @@ with nothing logged -- consistent with an idle/connection timeout
 somewhere between the local kubectl process and the API server, though the
 exact upstream cause wasn't tracked further. Manual reproductions never
 caught this because they were always short-lived, freshly-started tunnels.
-Fixed by having `_wait_for_server_ready` check
-`self._port_forward_proc.poll()` every iteration and transparently
-restart the tunnel via `_start_port_forward()` if it's died, rather than
-retrying HTTP requests against a dead port for the rest of the timeout.
+First fix attempt only checked `self._port_forward_proc.poll()` inside
+`_wait_for_server_ready`'s loop -- which covers the initial boot wait, but
+not the rest of the episode. Confirmed 2026-09-15 in a follow-up run: the
+tunnel died again, this time mid-episode (after 2 real agent steps had
+already succeeded), and every OSWorld controller call (screenshot, a11y
+tree, action execution, recording) goes straight to `http://localhost:<port>`
+with no awareness of this provider's tunnel at all, so nothing else would
+ever notice or recover. Fixed properly with a persistent watchdog thread
+(`_port_forward_watchdog`) that runs for the entire VM lifetime (started
+in `start_emulator`, stopped in `stop_emulator`), plus a shared
+`_restart_port_forward_if_dead` helper (behind a lock, since both the
+watchdog and the initial readiness wait can independently notice a dead
+tunnel) so a restart doesn't hand out new local port numbers -- callers
+outside this provider have already cached the port from `get_ip_address()`
+and would be silently stranded if it changed.
 
 ## What's unverified
 - **Registry push size/reachability.** Pushing a 20+ GiB image to a public

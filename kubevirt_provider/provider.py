@@ -164,6 +164,12 @@ class KubeVirtProvider(Provider):
         self.vnc_port: Optional[int] = None
         self.vlc_port: Optional[int] = None
         self._port_forward_proc: Optional[subprocess.Popen] = None
+        self._watchdog_stop = threading.Event()
+        # Guards restart attempts -- both _wait_for_server_ready (during
+        # initial boot) and the watchdog (for the rest of the VM's life)
+        # can independently notice a dead tunnel; without this lock they
+        # could race and both try to restart it at once.
+        self._port_forward_lock = threading.Lock()
 
     # ---- Provider interface ------------------------------------------------
 
@@ -203,6 +209,18 @@ class KubeVirtProvider(Provider):
             else:
                 self._start_port_forward()
                 self.vm_ip = "localhost"
+                # Runs for the life of the VM, not just this initial wait --
+                # confirmed 2026-09-15 that kubectl port-forward can die
+                # silently well after boot, mid-episode (e.g. after 2-3
+                # agent steps), not just during the first readiness check.
+                # Every OSWorld controller call goes through this same
+                # local port with no health-check of its own, so the tunnel
+                # needs to keep itself alive independently of any specific
+                # caller.
+                self._watchdog_stop.clear()
+                threading.Thread(
+                    target=self._port_forward_watchdog, daemon=True
+                ).start()
 
             self._wait_for_server_ready()
         except Exception:
@@ -229,6 +247,10 @@ class KubeVirtProvider(Provider):
         self.stop_emulator(path_to_vm)
 
     def stop_emulator(self, path_to_vm: str, region=None, *args, **kwargs):
+        # Must happen before terminating the process below -- otherwise the
+        # watchdog notices the "dead" tunnel mid-teardown and helpfully
+        # restarts a port-forward for a VMI we're about to delete anyway.
+        self._watchdog_stop.set()
         if self._port_forward_proc is not None:
             logger.info("Stopping port-forward for VMI %s", self.vmi_name)
             self._port_forward_proc.terminate()
@@ -295,11 +317,18 @@ class KubeVirtProvider(Provider):
 
     def _start_port_forward(self):
         pod_name = self._launcher_pod_name()
-        base = config.LOCAL_PORT_BASE
-        self.server_port = _free_local_port(base)
-        self.chromium_port = _free_local_port(self.server_port + 1)
-        self.vnc_port = _free_local_port(self.chromium_port + 1)
-        self.vlc_port = _free_local_port(self.vnc_port + 1)
+        # Only pick fresh local ports the first time. On a watchdog-driven
+        # restart, DesktopEnv/its controllers have already cached
+        # self.server_port etc (via get_ip_address()'s "host:port:..."
+        # string, read once in desktop_env.py's _start_emulator) -- handing
+        # out different port numbers on restart would silently strand
+        # every caller still using the old ones.
+        if self.server_port is None:
+            base = config.LOCAL_PORT_BASE
+            self.server_port = _free_local_port(base)
+            self.chromium_port = _free_local_port(self.server_port + 1)
+            self.vnc_port = _free_local_port(self.chromium_port + 1)
+            self.vlc_port = _free_local_port(self.vnc_port + 1)
 
         port_pairs = [
             f"{self.server_port}:{config.SERVER_PORT}",
@@ -356,32 +385,42 @@ class KubeVirtProvider(Provider):
         except (ValueError, OSError):
             pass  # pipe closed during teardown
 
+    def _restart_port_forward_if_dead(self, context: str) -> bool:
+        """Returns True if a restart was performed."""
+        with self._port_forward_lock:
+            if self._port_forward_proc is None or self._port_forward_proc.poll() is None:
+                return False  # already alive, or torn down by stop_emulator
+            logger.warning(
+                "kubectl port-forward exited unexpectedly (code %s, during "
+                "%s) -- restarting tunnel",
+                self._port_forward_proc.returncode, context,
+            )
+            self._start_port_forward()
+            return True
+
+    def _port_forward_watchdog(self):
+        # Runs for the life of the VM (started once in start_emulator,
+        # stopped in stop_emulator). Every OSWorld controller call
+        # (screenshot, a11y tree, action execution, recording, ...) goes
+        # straight to http://localhost:<port> with no awareness of this
+        # provider's tunnel at all -- confirmed 2026-09-15 that
+        # kubectl port-forward can die well after boot, mid-episode, so
+        # nothing else in the codebase would ever notice or recover.
+        while not self._watchdog_stop.wait(timeout=3):
+            self._restart_port_forward_if_dead("watchdog")
+
     def _wait_for_server_ready(self):
         deadline = time.monotonic() + config.READY_TIMEOUT_SEC
         last_err = None
         restarts = 0
         while time.monotonic() < deadline:
             # Recomputed every iteration, not hoisted above the loop --
-            # a restart below can reassign self.server_port to a different
-            # local port than what we started with.
+            # a restart below (here or in the watchdog running concurrently)
+            # can reassign self.server_port to a different local port than
+            # what we started with.
             url = f"http://{self.vm_ip}:{self.server_port}/screenshot"
-            # kubectl port-forward can die mid-wait (e.g. an idle/connection
-            # timeout somewhere between here and the API server) without
-            # printing anything actionable -- confirmed 2026-09-15, it
-            # establishes the tunnel successfully, then exits silently a
-            # short time later, and every request against the now-dead
-            # local port fails with ConnectionError for the rest of the
-            # timeout. If we're doing our own port-forwarding (not
-            # IN_CLUSTER) and the process has exited, restart the tunnel
-            # instead of continuing to hammer a dead port.
-            if self._port_forward_proc is not None and self._port_forward_proc.poll() is not None:
+            if self._restart_port_forward_if_dead("initial readiness wait"):
                 restarts += 1
-                logger.warning(
-                    "kubectl port-forward exited unexpectedly (code %s) -- "
-                    "restarting tunnel (attempt %d)",
-                    self._port_forward_proc.returncode, restarts,
-                )
-                self._start_port_forward()
             try:
                 r = requests.get(url, timeout=(10, 10))
                 if r.status_code == 200:

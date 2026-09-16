@@ -137,6 +137,13 @@ class InstrumentedAgent:
             if isinstance(obs, dict) else None,
             "model_response": response,
             "parsed_actions": actions,
+            # Our requested alias (e.g. "qwen3") isn't a pinned checkpoint --
+            # NRP's docs note models are "added and retired as the
+            # open-weights frontier moves". This is the actual served model
+            # string from the last raw API response (e.g.
+            # "Qwen/Qwen3.8-Flash-Next-FP8"), so results stay attributable
+            # even if NRP swaps the backing checkpoint between pilot runs.
+            "served_model": getattr(self._inner, "last_served_model", None),
         }
         self._write_record(record)
         self._step_idx += 1
