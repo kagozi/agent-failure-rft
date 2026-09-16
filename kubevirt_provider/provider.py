@@ -48,6 +48,7 @@ from __future__ import annotations
 import logging
 import socket
 import subprocess
+import threading
 import time
 import uuid
 from typing import Optional
@@ -101,13 +102,45 @@ def _build_vmi_manifest(name: str, image: str) -> dict:
                         "memory": config.VM_MEMORY,
                         "cpu": config.VM_CPU_CORES,
                     },
+                    # Explicit limits are required here: the namespace has a
+                    # LimitRange that auto-injects a small default *limit*
+                    # (100m cpu / 1Gi memory, sized for lightweight batch
+                    # pods) onto any container that doesn't specify one --
+                    # then rejects our (larger) request for exceeding that
+                    # injected limit. Setting limits == requests avoids
+                    # triggering the default injection.
+                    "limits": {
+                        "memory": config.VM_MEMORY,
+                        "cpu": config.VM_CPU_CORES,
+                    },
                 },
                 "devices": {
                     "disks": [
                         {"name": "containerdisk", "disk": {"bus": "virtio"}},
                     ],
+                    # Explicit masquerade binding is required. Leaving this
+                    # unset doesn't fall back to masquerade (as this
+                    # provider originally assumed) -- KubeVirt's real
+                    # default is *bridge* binding, where the guest gets its
+                    # own IP on the bridge, separate from the pod's own
+                    # network namespace. `kubectl port-forward` (and, in
+                    # IN_CLUSTER mode, anything else reaching the VM via
+                    # the pod IP) only sees sockets inside the pod's own
+                    # netns, so a bridged guest's ports are unreachable
+                    # that way. Masquerade NATs guest traffic through the
+                    # pod's own IP via iptables, which is what actually
+                    # makes the guest's ports visible on the pod IP.
+                    # Confirmed 2026-09-15: with bridge (the unset
+                    # default), _wait_for_server_ready always timed out;
+                    # explicit masquerade fixed it.
+                    "interfaces": [
+                        {"name": "default", "masquerade": {}},
+                    ],
                 },
             },
+            "networks": [
+                {"name": "default", "pod": {}},
+            ],
             "terminationGracePeriodSeconds": 30,
             "volumes": [
                 {
@@ -299,11 +332,56 @@ class KubeVirtProvider(Provider):
         if forwarding_lines < len(port_pairs):
             raise TimeoutError("kubectl port-forward did not confirm all 4 tunnels in time")
 
+        # Keep draining stdout for the life of the process. If nothing reads
+        # it, the OS pipe buffer (~64KB) eventually fills from kubectl's own
+        # ongoing log/retry output (e.g. connection resets on whichever of
+        # the 4 ports the guest isn't listening on yet) and kubectl blocks on
+        # its next write() -- which stalls the *entire* port-forward,
+        # including the tunnels that were otherwise fine. Confirmed
+        # 2026-09-15: without this, _wait_for_server_ready always timed out
+        # against a real multi-port forward, even though the same command
+        # worked fine manually with output redirected to a file instead of
+        # captured via PIPE.
+        threading.Thread(
+            target=self._drain_port_forward_output, daemon=True
+        ).start()
+
+    def _drain_port_forward_output(self):
+        proc = self._port_forward_proc
+        if proc is None or proc.stdout is None:
+            return
+        try:
+            for line in proc.stdout:
+                logger.debug("[port-forward] %s", line.rstrip())
+        except (ValueError, OSError):
+            pass  # pipe closed during teardown
+
     def _wait_for_server_ready(self):
-        url = f"http://{self.vm_ip}:{self.server_port}/screenshot"
         deadline = time.monotonic() + config.READY_TIMEOUT_SEC
         last_err = None
+        restarts = 0
         while time.monotonic() < deadline:
+            # Recomputed every iteration, not hoisted above the loop --
+            # a restart below can reassign self.server_port to a different
+            # local port than what we started with.
+            url = f"http://{self.vm_ip}:{self.server_port}/screenshot"
+            # kubectl port-forward can die mid-wait (e.g. an idle/connection
+            # timeout somewhere between here and the API server) without
+            # printing anything actionable -- confirmed 2026-09-15, it
+            # establishes the tunnel successfully, then exits silently a
+            # short time later, and every request against the now-dead
+            # local port fails with ConnectionError for the rest of the
+            # timeout. If we're doing our own port-forwarding (not
+            # IN_CLUSTER) and the process has exited, restart the tunnel
+            # instead of continuing to hammer a dead port.
+            if self._port_forward_proc is not None and self._port_forward_proc.poll() is not None:
+                restarts += 1
+                logger.warning(
+                    "kubectl port-forward exited unexpectedly (code %s) -- "
+                    "restarting tunnel (attempt %d)",
+                    self._port_forward_proc.returncode, restarts,
+                )
+                self._start_port_forward()
             try:
                 r = requests.get(url, timeout=(10, 10))
                 if r.status_code == 200:
@@ -315,7 +393,8 @@ class KubeVirtProvider(Provider):
             time.sleep(3)
         raise TimeoutError(
             f"OSWorld guest server at {url} not ready after "
-            f"{config.READY_TIMEOUT_SEC:.0f}s (last error: {last_err}). If this "
+            f"{config.READY_TIMEOUT_SEC:.0f}s ({restarts} port-forward "
+            f"restart(s), last error: {last_err}). If this "
             f"is the first run against a new containerDisk image, confirm the "
             f"guest's systemd units for the Flask server/VNC actually started "
             f"-- e.g. `kubectl exec` into the launcher pod's compute container "

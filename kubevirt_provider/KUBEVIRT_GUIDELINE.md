@@ -6,6 +6,22 @@ approach. Confirmed working (KVM hardware acceleration, full VMI CRUD
 permissions) against namespace `gai-lina-group` on 2026-09-11 — see
 `../README.md` for how this fits the overall project plan.
 
+**Full end-to-end confirmed 2026-09-15**: one real OSWorld task
+(`os/5ea617a3-...`) ran completely through this pipeline -- VMI booted via
+KubeVirt, `qwen3` (via NRP) drove real `pyautogui` actions in the guest,
+a 17-record trajectory JSONL was written (episode_start + 15 steps +
+episode_end), and the episode was scored (0.0 -- a genuine task failure,
+not a pipeline failure). Getting there surfaced five real bugs, each
+documented below where it's fixed: VMI `resources.limits` (namespace
+`LimitRange` rejection), explicit masquerade networking (bridge was the
+silent default), draining the port-forward subprocess's stdout, detecting
++ recovering from the port-forward process dying mid-wait, and retry/backoff
+on the NRP call path (a reasoning model burning `max_tokens` on hidden
+chain-of-thought, or a transient 5xx, previously wasted an entire agent
+step with zero recovery attempt -- confirmed this silently ate 13
+consecutive steps in one run, which would corrupt a failure taxonomy by
+mislabeling API noise as agent capability failure).
+
 ## Why KubeVirt instead of the Docker provider
 
 OSWorld's built-in `docker` provider needs a **privileged** container to
@@ -112,30 +128,75 @@ budget can be spent on hidden chain-of-thought before any actual answer
 comes back (`content: null`). 4096 was enough in testing; watch the logs
 for "returned no content" warnings if steps start silently doing nothing.
 
-## Known blocker (unresolved as of 2026-09-15)
+## Resolved: LimitRange rejection on VMI creation
 
 The `gai-lina-group` namespace has a `LimitRange` (`gai-lina-group-mem`)
-capping every container to 1Gi memory / 100m CPU by default -- far below
-what a real desktop VM needs (this provider requests 4Gi/4 cores, matching
-the Docker provider's own defaults). KubeVirt's `virtualmachine-controller`
-rejects the launcher pod outright (`FailedCreate`, visible via `kubectl
-describe vmi`) before it ever reaches `Pending`/`Running`. This blocked the
-first real end-to-end run. Needs either: NRP support raising the
-namespace's LimitRange for this workload, or finding out whether a
-different namespace/quota class is available for KubeVirt-based workloads.
-Confirm this before assuming the rest of the pipeline is ready to scale.
+that auto-injects a small default *limit* (100m cpu / 1Gi memory, sized
+for lightweight batch pods) onto any container that doesn't specify
+`resources.limits` explicitly. The original VMI manifest only set
+`resources.requests` (4Gi/4 cores, matching the Docker provider's
+defaults), so KubeVirt's `virtualmachine-controller` rejected the launcher
+pod outright (`FailedCreate`, visible via `kubectl describe vmi`) for
+requesting more than the auto-injected limit -- this looked like a
+namespace-level quota wall at first, but wasn't. Fixed in `provider.py`'s
+`_build_vmi_manifest` by setting `resources.limits` equal to
+`resources.requests`, confirmed 2026-09-15 (pod creation succeeds, VMI
+reaches `Running`).
+
+## Resolved: guest ports unreachable (wrong network binding)
+
+The original manifest didn't declare `spec.domain.devices.interfaces` /
+`spec.networks` at all, on the assumption that leaving it unset would fall
+back to masquerade binding (which forwards all ports from the pod IP into
+the guest). That assumption was wrong: KubeVirt's real default when
+unset is **bridge** binding, where the guest gets its own IP on the
+bridge, separate from the pod's own network namespace. `kubectl
+port-forward` (and, in `KUBEVIRT_IN_CLUSTER=1` mode, anything else
+reaching the VM via the pod IP) can only reach sockets inside the pod's
+own netns -- a bridged guest's listening ports are invisible that way, so
+`_wait_for_server_ready` timed out every time even though the guest had
+booted fine. Fixed by explicitly setting
+`interfaces: [{name: default, masquerade: {}}]` and
+`networks: [{name: default, pod: {}}]` in `_build_vmi_manifest`. Confirmed
+2026-09-15: `/screenshot` answers immediately once this is in place.
+
+## Resolved: port-forward stalling after ~5 minutes
+
+Even with masquerade networking working (confirmed instantly reachable in
+manual tests), the real `run.py` path still timed out at
+`_wait_for_server_ready` every time -- always after the full timeout, never
+sooner, and never reproducible with a manual `kubectl port-forward` run by
+hand. Root cause: `_start_port_forward` captured the subprocess's stdout via
+`subprocess.PIPE`, read a few lines to confirm the tunnels came up, then
+never read from that pipe again. `kubectl port-forward` keeps writing to
+stdout for the life of the process (e.g. retry/error output for whichever
+of the 4 forwarded ports the guest isn't listening on), and once the OS
+pipe buffer fills (~64KB), `kubectl` blocks on its next `write()` -- which
+stalls the *entire* port-forward, including the one tunnel (`:5000`)
+`_wait_for_server_ready` actually needs. Manual reproductions never hit
+this because they either redirected output to a file (unbounded) or exited
+before the buffer filled. Fixed by draining the pipe continuously in a
+background thread for the life of the process.
+
+## Resolved: kubectl port-forward dying silently mid-wait
+
+The pipe-draining fix above didn't fix the timeout on its own -- caught it
+live by curling the exact tunnel `run.py` had just created while it was
+still inside its 5-minute wait, and found `kubectl port-forward` simply
+wasn't running anymore (absent from `ps aux`), while `run.py` itself was
+still alive, still retrying HTTP requests against the now-dead local port.
+`kubectl port-forward` established the tunnel successfully (all 4
+"Forwarding from" lines seen) and then exited on its own some time later
+with nothing logged -- consistent with an idle/connection timeout
+somewhere between the local kubectl process and the API server, though the
+exact upstream cause wasn't tracked further. Manual reproductions never
+caught this because they were always short-lived, freshly-started tunnels.
+Fixed by having `_wait_for_server_ready` check
+`self._port_forward_proc.poll()` every iteration and transparently
+restart the tunnel via `_start_port_forward()` if it's died, rather than
+retrying HTTP requests against a dead port for the rest of the timeout.
 
 ## What's unverified
-
-- **Whether all four guest ports (5000/8006/9222/8080) are actually
-  reachable through KubeVirt's default masquerade pod-network binding on
-  this specific cluster build.** Documented upstream default behavior, and
-  the SSL/resource-limit issues above were hit before a real OSWorld VMI
-  ever reached `Running`, so this specific check still hasn't happened. If
-  a task hangs at `_wait_for_server_ready` once the VM does boot, this is
-  the first thing to check — `kubectl exec` into the launcher pod and
-  check whether the Flask server process itself started, before suspecting
-  network plumbing.
 - **Registry push size/reachability.** Pushing a 20+ GiB image to a public
   registry and having every NRP node pull it on VM boot is the "just get
   it working" path, not necessarily the efficient one — if boot latency

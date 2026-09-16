@@ -79,10 +79,10 @@ index 81972b1e..937c64cf 100644
  
  
 diff --git a/mm_agents/agent.py b/mm_agents/agent.py
-index 592e4c40..9dbc48af 100644
+index 592e4c40..1a3a8181 100644
 --- a/mm_agents/agent.py
 +++ b/mm_agents/agent.py
-@@ -581,6 +581,48 @@ class PromptAgent:
+@@ -581,6 +581,72 @@ class PromptAgent:
      )
      def call_llm(self, payload):
  
@@ -99,34 +99,58 @@ index 592e4c40..9dbc48af 100644
 +                "Content-Type": "application/json",
 +                "Authorization": f"Bearer {os.environ['NRP_API_KEY']}"
 +            }
-+            logger.info("Generating content with NRP-hosted model: %s", payload['model'])
-+            response = requests.post(api_url, headers=headers, json=payload)
-+
-+            if response.status_code != 200:
-+                logger.error("Failed to call NRP LLM: " + response.text)
-+                time.sleep(5)
-+                return ""
-+
-+            message = response.json()['choices'][0]['message']
-+            content = message.get('content')
-+            if content is None:
-+                # NRP's qwen3 is a reasoning model: chain-of-thought goes in
-+                # a separate "reasoning" field, and "content" stays null
-+                # until reasoning finishes. If max_tokens is too small, the
-+                # budget is spent entirely on reasoning (finish_reason
-+                # "length") and content never gets produced. Surface this
-+                # clearly instead of returning None into parse_actions().
-+                logger.error(
-+                    "NRP model %s returned no content (finish_reason=%s) -- "
-+                    "likely ran out of max_tokens mid-reasoning before "
-+                    "producing an answer. Raise --max_tokens. reasoning="
-+                    "%r",
-+                    payload['model'],
-+                    response.json()['choices'][0].get('finish_reason'),
-+                    (message.get('reasoning') or '')[:500],
++            nrp_payload = dict(payload)
++            # Unlike the SDK-based branches below, this one doesn't go
++            # through the @backoff decorator (it returns "" on failure
++            # rather than raising), so without an explicit retry loop a
++            # single transient 5xx burns an entire agent step with no
++            # recovery attempt. Confirmed 2026-09-15: this silently wasted
++            # 13 consecutive steps in one run, which would corrupt a
++            # failure taxonomy by mislabeling API infra noise as agent
++            # capability failure.
++            for attempt in range(3):
++                logger.info(
++                    "Generating content with NRP-hosted model: %s (attempt %d)",
++                    nrp_payload['model'], attempt + 1,
 +                )
-+                return ""
-+            return content
++                response = requests.post(api_url, headers=headers, json=nrp_payload)
++
++                if response.status_code != 200:
++                    logger.error(
++                        "Failed to call NRP LLM (HTTP %d): %s",
++                        response.status_code, response.text,
++                    )
++                    time.sleep(5)
++                    continue
++
++                message = response.json()['choices'][0]['message']
++                content = message.get('content')
++                if content is None:
++                    # NRP's qwen3 is a reasoning model: chain-of-thought goes
++                    # in a separate "reasoning" field, and "content" stays
++                    # null until reasoning finishes. If max_tokens is too
++                    # small, the budget is spent entirely on reasoning
++                    # (finish_reason "length") and content never gets
++                    # produced. Retry with a larger budget rather than
++                    # giving up immediately -- the same max_tokens is likely
++                    # to reproduce the same truncation.
++                    logger.error(
++                        "NRP model %s returned no content (finish_reason=%s) "
++                        "-- likely ran out of max_tokens mid-reasoning. "
++                        "reasoning=%r",
++                        nrp_payload['model'],
++                        response.json()['choices'][0].get('finish_reason'),
++                        (message.get('reasoning') or '')[:500],
++                    )
++                    nrp_payload['max_tokens'] = min(nrp_payload.get('max_tokens', 1500) * 2, 8192)
++                    continue
++                return content
++
++            logger.error(
++                "Giving up on NRP LLM call for model %s after 3 attempts.",
++                payload['model'],
++            )
++            return ""
 +
          if payload['model'].startswith("azure-gpt-4o"):
  

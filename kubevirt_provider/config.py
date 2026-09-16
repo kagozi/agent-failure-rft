@@ -37,8 +37,13 @@ Optional:
                                    port-forward allocation (avoids clobbering
                                    anything already using 5000/8006/9222/8080
                                    locally).
-  KUBEVIRT_BOOT_TIMEOUT_SEC      — default 300. Wait budget for the VMI to
-                                    reach phase=Running.
+  KUBEVIRT_BOOT_TIMEOUT_SEC      — default 900. Wait budget for the VMI to
+                                    reach phase=Running. Needs to cover a
+                                    cold image pull, not just VM boot --
+                                    confirmed on 2026-09-15 that pulling the
+                                    ~12.4GB osworld-ubuntu containerDisk on
+                                    a node that hasn't cached it yet takes
+                                    ~8-9 minutes by itself.
   KUBEVIRT_READY_TIMEOUT_SEC     — default 300. Wait budget for the in-guest
                                     OSWorld Flask server on :5000 to answer
                                     /screenshot, after networking is up.
@@ -67,7 +72,7 @@ VM_CPU_CORES = os.environ.get("KUBEVIRT_VM_CPU_CORES", "4")
 IN_CLUSTER = os.environ.get("KUBEVIRT_IN_CLUSTER", "0") == "1"
 LOCAL_PORT_BASE = int(os.environ.get("KUBEVIRT_LOCAL_PORT_BASE", "15000"))
 
-BOOT_TIMEOUT_SEC = float(os.environ.get("KUBEVIRT_BOOT_TIMEOUT_SEC", "300"))
+BOOT_TIMEOUT_SEC = float(os.environ.get("KUBEVIRT_BOOT_TIMEOUT_SEC", "900"))
 READY_TIMEOUT_SEC = float(os.environ.get("KUBEVIRT_READY_TIMEOUT_SEC", "300"))
 
 KUBECONFIG = os.environ.get("KUBEVIRT_KUBECONFIG") or None
