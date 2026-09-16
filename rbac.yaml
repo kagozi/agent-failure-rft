@@ -1,0 +1,36 @@
+# RBAC for the OSWorld runner Job (osworld-job.yaml) to manage VirtualMachineInstances
+# in-cluster via kubevirt_provider. The namespace's default ServiceAccount has no
+# permissions for this -- KubeVirtProvider needs create/get/list/watch/delete on
+# virtualmachineinstances.kubevirt.io to boot and tear down the desktop VM per episode.
+#
+# Apply once per namespace:
+#   kubectl apply -f rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: osworld-runner
+  namespace: gai-lina-group
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: osworld-runner-vmi
+  namespace: gai-lina-group
+rules:
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachineinstances"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: osworld-runner-vmi
+  namespace: gai-lina-group
+subjects:
+  - kind: ServiceAccount
+    name: osworld-runner
+    namespace: gai-lina-group
+roleRef:
+  kind: Role
+  name: osworld-runner-vmi
+  apiGroup: rbac.authorization.k8s.io

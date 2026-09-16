@@ -2,11 +2,21 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: trajectory-logs-pvc
+  namespace: gai-lina-group
 spec:
   accessModes:
     - ReadWriteOnce
+  # No StorageClass on this cluster is marked default (confirmed via
+  # `kubectl get sc` -- every class showed DEFAULT=<none>), so this must be
+  # explicit or the PVC stays Pending forever. ceph-rbd,
+  # rook-ceph-block-central, and rook-cephfs-central were all tried on
+  # 2026-09-16 and failed/stalled against the shared "central" Ceph pool
+  # (per user: known down at the time); linstor-sdsu worked as a
+  # non-Ceph fallback. Switched to rook-cephfs (a separate, non-central
+  # Ceph pool) once the central pool's outage was confirmed distinct from
+  # this one -- also what several other long-lived PVCs in this namespace
+  # already use successfully.
+  storageClassName: rook-cephfs
   resources:
     requests:
       storage: 20Gi
-  # NRP typically exposes a default StorageClass; check `kubectl get sc`
-  # in your namespace and set storageClassName explicitly if needed.

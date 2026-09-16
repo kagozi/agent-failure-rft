@@ -1,0 +1,11 @@
+# Used when building runner/Dockerfile with the repo root as build context.
+# osworld/ is our local dev clone (includes a 24GB+ qcow2 and a venv) --
+# the runner image clones its own pinned copy at build time instead.
+osworld/
+.git/
+.venv/
+__pycache__/
+*.pyc
+.env
+ROADMAP.md
+CLAUDE.md

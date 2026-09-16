@@ -1,81 +1,110 @@
 # OSWorld evaluation job for the NRP (Nautilus) Kubernetes cluster.
 #
-# IMPORTANT — read before running:
-# OSWorld's Docker provider runs a full Ubuntu VM *inside* the container via
-# QEMU/KVM, so the pod needs access to /dev/kvm on the host node (nested
-# virtualization). Not all Nautilus nodes expose this. Before relying on
-# this, either:
-#   (a) ask in NRP office hours / their contact channel which nodes support
-#       KVM passthrough for pods, and add a nodeSelector for those, or
-#   (b) fall back to OSWorld's other providers (e.g. a cloud VM provider, or
-#       running the task server directly on a VM you control) if no NRP
-#       node exposes KVM to pods.
+# Runs the harness *inside* the cluster (KUBEVIRT_IN_CLUSTER=1) using the
+# KubeVirt provider -- the desktop VM this drives is a separate
+# VirtualMachineInstance created via the Kubernetes API, not nested
+# virtualization inside this pod, so no privileged security context or
+# /dev/kvm passthrough is needed here at all. That requirement only applied
+# to OSWorld's default Docker provider, which this scaffold intentionally
+# doesn't use (see kubevirt_provider/KUBEVIRT_GUIDELINE.md for why).
 #
-# This manifest requests a single GPU node (for local model inference if
-# you're not calling the NRP-hosted LLM API) and mounts a PVC for
-# trajectory logs so they persist after the job completes.
+# Prerequisites (one-time):
+#   1. Build+push the VM's containerDisk image -- kubevirt_provider/KUBEVIRT_GUIDELINE.md Step 1.
+#   2. Build+push this job's runner image:
+#        docker build --platform linux/amd64 -f runner/Dockerfile \
+#          -t ghcr.io/kagozi/osworld-runner:latest .
+#        docker push ghcr.io/kagozi/osworld-runner:latest
+#   3. RBAC so this job can manage VirtualMachineInstances:
+#        kubectl apply -f rbac.yaml
+#   4. Trajectory storage:
+#        kubectl apply -f pvc.yaml
+#   5. NRP credentials as a Secret (never commit these as plaintext):
+#        kubectl create secret generic nrp-llm-credentials \
+#          --namespace gai-lina-group \
+#          --from-literal=NRP_API_BASE=https://ellm.nrp-nautilus.io/v1 \
+#          --from-literal=NRP_API_KEY=<your key> \
+#          --from-literal=NRP_MODEL=qwen3
 #
 # Usage:
-#   kubectl apply -f pvc.yaml        # create the trajectory-logs PVC first
 #   kubectl apply -f osworld-job.yaml
-#   kubectl logs -f job/osworld-eval-run
+#   kubectl logs -f job/osworld-eval-run -n gai-lina-group
+#
+# --max_trajectory_length 1 (overriding OSWorld's default of 3) is load-
+# bearing, not a tuning choice: confirmed 2026-09-16 that NRP's endpoint
+# returns an empty-body HTTP 500 (a gateway-level rejection, not a
+# model-side error -- no JSON error body at all) once a request's payload
+# crosses roughly 4-5MB. Each accumulated turn of screenshot history adds
+# ~1.3-1.8MB; with the default of 3 past turns retained, requests exceed
+# that threshold from step 3 onward every time, which looked exactly like
+# repeated "NRP outages" in earlier testing but was actually this
+# deterministic bug -- every prior failure of this shape started right
+# after step 2. max_trajectory_length=1 keeps at most 2 images per
+# request (1 past + 1 current), safely under the threshold (measured:
+# 2 images ~3.5MB succeeds, 3 images ~5.3MB fails). The real cost is a
+# shorter visual history for the agent -- worth flagging explicitly in
+# any analysis, since it's a genuine confound between "the model failed
+# to track state" and "we truncated its visual context to fit a payload
+# limit neither of us chose."
+#
+# --test_all_meta_path below points at the single-task smoke test by
+# default -- swap it for a real pilot-batch meta file before scaling up.
 
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: osworld-eval-run
+  namespace: gai-lina-group
   labels:
-    app: vln-agent-research
+    app: osworld-agent-research
 spec:
-  backoffLimit: 1
+  backoffLimit: 0
   template:
     spec:
       restartPolicy: Never
-      # Uncomment and adjust once you confirm which nodes expose /dev/kvm:
-      # nodeSelector:
-      #   nrp-nautilus.io/kvm: "true"
+      serviceAccountName: osworld-runner
       containers:
         - name: osworld-runner
-          image: python:3.10-slim
-          # NOTE: replace this command block with a proper Dockerfile-built
-          # image once the pipeline is stable -- installing everything at
-          # pod-start time is fine for early iteration but slow and brittle.
-          command: ["/bin/bash", "-c"]
+          image: ghcr.io/kagozi/osworld-runner:latest
+          command: ["/bin/sh", "-c"]
           args:
-            - |
-              set -euo pipefail
-              apt-get update && apt-get install -y git docker.io
-              git clone --depth 1 https://github.com/xlang-ai/OSWorld.git /workspace/osworld
-              cd /workspace/osworld
-              pip install -r requirements.txt
-              cp /scaffold/instrumented_agent.py mm_agents/instrumented_agent.py
-              python run.py \
-                --provider_name docker \
-                --observation_type screenshot_a11y_tree \
-                --model "$NRP_MODEL" \
-                --result_dir /trajectories
+            - >-
+              exec python run.py
+              --provider_name kubevirt
+              --observation_type screenshot_a11y_tree
+              --model "$NRP_MODEL"
+              --max_tokens 4096
+              --max_steps 15
+              --max_trajectory_length 1
+              --test_all_meta_path evaluation_examples/test_smoke.json
+              --result_dir /trajectories
+          env:
+            - name: KUBEVIRT_NAMESPACE
+              value: gai-lina-group
+            - name: KUBEVIRT_BASE_IMAGE
+              value: ghcr.io/kagozi/osworld-ubuntu:latest
+            - name: KUBEVIRT_IN_CLUSTER
+              value: "1"
           envFrom:
             - secretRef:
-                name: nrp-llm-credentials   # kubectl create secret ... (see README)
+                name: nrp-llm-credentials
           volumeMounts:
             - name: trajectory-storage
               mountPath: /trajectories
-            - name: scaffold
-              mountPath: /scaffold
           resources:
+            # This pod only orchestrates via the k8s/NRP APIs -- the actual
+            # desktop VM is a separate VMI, not nested inside this
+            # container -- so it needs modest resources, unlike the old
+            # Docker-provider design this replaced. limits are capped at
+            # 1.2x requests: a cluster-wide admission policy rejects (as of
+            # 2026-09-16, a warning, not yet a hard block) any
+            # limit:request ratio above 1.2.
             requests:
-              cpu: "4"
-              memory: 16Gi
+              cpu: "1"
+              memory: 2Gi
             limits:
-              cpu: "8"
-              memory: 32Gi
-              nvidia.com/gpu: "0"   # bump to "1" only if running local model inference
-          securityContext:
-            privileged: true   # required for nested KVM virtualization; see note above
+              cpu: "1200m"
+              memory: 2400Mi
       volumes:
         - name: trajectory-storage
           persistentVolumeClaim:
             claimName: trajectory-logs-pvc
-        - name: scaffold
-          configMap:
-            name: osworld-scaffold-files

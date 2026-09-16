@@ -79,7 +79,7 @@ index 81972b1e..937c64cf 100644
  
  
 diff --git a/mm_agents/agent.py b/mm_agents/agent.py
-index 592e4c40..44b4629b 100644
+index 592e4c40..c941e6b0 100644
 --- a/mm_agents/agent.py
 +++ b/mm_agents/agent.py
 @@ -263,6 +263,7 @@ class PromptAgent:
@@ -90,7 +90,7 @@ index 592e4c40..44b4629b 100644
  
          if observation_type == "screenshot":
              if action_space == "computer_13":
-@@ -581,6 +582,88 @@ class PromptAgent:
+@@ -581,6 +582,100 @@ class PromptAgent:
      )
      def call_llm(self, payload):
  
@@ -114,14 +114,26 @@ index 592e4c40..44b4629b 100644
 +            # single transient 5xx burns an entire agent step with no
 +            # recovery attempt. Confirmed 2026-09-15: this silently wasted
 +            # 13 consecutive steps in one run (a fast-failing 3-attempt
-+            # budget), and separately rode out only part of a real ~4-minute
-+            # NRP-side 500 outage. Escalating backoff (5/10/20/40/60/60s,
-+            # ~3min total) covers most transient blips without making a
-+            # single step hang indefinitely against a truly dead endpoint --
-+            # a multi-minute outage that outlasts this budget is a real
-+            # infra event, not something to paper over with unbounded
-+            # retries; it should show up as a distinct category in the
-+            # failure taxonomy rather than be silently absorbed here.
++            # budget).
++            #
++            # IMPORTANT CORRECTION (2026-09-16): several multi-minute runs
++            # of sustained HTTP 500s were originally logged/reported here as
++            # "real NRP-side outages". They were not. Root cause: NRP's
++            # endpoint returns an empty-body HTTP 500 (a gateway-level
++            # rejection, not a model-side error) once a request payload
++            # exceeds roughly 4-5MB, and OSWorld's default
++            # max_trajectory_length=3 accumulates enough screenshot history
++            # to cross that threshold from step 3 onward, every time --
++            # see osworld-job.yaml's --max_trajectory_length 1 override and
++            # comment for the full writeup. No amount of retrying fixes a
++            # deterministic oversized-payload rejection; this backoff loop
++            # only actually helps with genuine transient issues (a real
++            # blip, a real rate limit), which is a different failure shape
++            # from what was actually observed and misdiagnosed. Keeping the
++            # backoff here regardless, since genuine transient failures are
++            # still possible and worth surviving -- just don't assume every
++            # sustained run of 500s is NRP being down without checking
++            # payload size first.
 +            backoff_schedule = [5, 10, 20, 40, 60, 60]
 +            for attempt in range(len(backoff_schedule)):
 +                logger.info(
