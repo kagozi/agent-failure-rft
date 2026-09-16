@@ -1,0 +1,31 @@
+# Build a KubeVirt "containerDisk" image wrapping OSWorld's pre-built
+# Ubuntu qcow2 (the same image desktop_env/providers/docker/manager.py
+# downloads) -- this is what my earlier KVM smoke test used
+# (quay.io/kubevirt/cirros-container-disk-demo:latest is the exact same
+# kind of image, just with a demo cirros disk instead of OSWorld's Ubuntu).
+#
+# containerDisk format is fixed by KubeVirt: the qcow2 must sit at
+# /disk/ inside an otherwise-empty image, owned by uid:gid 107:107 (the
+# qemu user inside virt-launcher).
+#
+# One-time build steps (run these yourself -- not automated by
+# manager.py/provider.py on purpose, see manager.py's docstring):
+#
+#   curl -L -o Ubuntu.qcow2.zip \
+#     https://huggingface.co/datasets/xlangai/ubuntu_osworld/resolve/main/Ubuntu.qcow2.zip
+#   unzip Ubuntu.qcow2.zip        # produces Ubuntu.qcow2, ~20+ GiB
+#
+#   docker build -f Dockerfile.containerdisk -t <your-registry>/osworld-ubuntu:latest .
+#   docker push <your-registry>/osworld-ubuntu:latest
+#
+#   export KUBEVIRT_BASE_IMAGE=<your-registry>/osworld-ubuntu:latest
+#
+# <your-registry> needs to be reachable by the NRP cluster's nodes when they
+# pull the image -- a public Docker Hub/GHCR repo is the simplest choice for
+# a first pass. If you'd rather not push a ~20GB image to a public registry,
+# the alternative is the CDI DataVolume/virtctl image-upload path flagged
+# as unverified in config.py's docstring -- ask in NRP office hours whether
+# their CDI upload proxy is reachable from outside the cluster before
+# investing time there.
+FROM scratch
+ADD --chown=107:107 Ubuntu.qcow2 /disk/

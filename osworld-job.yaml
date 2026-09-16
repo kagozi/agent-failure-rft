@@ -1,0 +1,81 @@
+# OSWorld evaluation job for the NRP (Nautilus) Kubernetes cluster.
+#
+# IMPORTANT — read before running:
+# OSWorld's Docker provider runs a full Ubuntu VM *inside* the container via
+# QEMU/KVM, so the pod needs access to /dev/kvm on the host node (nested
+# virtualization). Not all Nautilus nodes expose this. Before relying on
+# this, either:
+#   (a) ask in NRP office hours / their contact channel which nodes support
+#       KVM passthrough for pods, and add a nodeSelector for those, or
+#   (b) fall back to OSWorld's other providers (e.g. a cloud VM provider, or
+#       running the task server directly on a VM you control) if no NRP
+#       node exposes KVM to pods.
+#
+# This manifest requests a single GPU node (for local model inference if
+# you're not calling the NRP-hosted LLM API) and mounts a PVC for
+# trajectory logs so they persist after the job completes.
+#
+# Usage:
+#   kubectl apply -f pvc.yaml        # create the trajectory-logs PVC first
+#   kubectl apply -f osworld-job.yaml
+#   kubectl logs -f job/osworld-eval-run
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: osworld-eval-run
+  labels:
+    app: vln-agent-research
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      # Uncomment and adjust once you confirm which nodes expose /dev/kvm:
+      # nodeSelector:
+      #   nrp-nautilus.io/kvm: "true"
+      containers:
+        - name: osworld-runner
+          image: python:3.10-slim
+          # NOTE: replace this command block with a proper Dockerfile-built
+          # image once the pipeline is stable -- installing everything at
+          # pod-start time is fine for early iteration but slow and brittle.
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              apt-get update && apt-get install -y git docker.io
+              git clone --depth 1 https://github.com/xlang-ai/OSWorld.git /workspace/osworld
+              cd /workspace/osworld
+              pip install -r requirements.txt
+              cp /scaffold/instrumented_agent.py mm_agents/instrumented_agent.py
+              python run.py \
+                --provider_name docker \
+                --observation_type screenshot_a11y_tree \
+                --model "$NRP_MODEL" \
+                --result_dir /trajectories
+          envFrom:
+            - secretRef:
+                name: nrp-llm-credentials   # kubectl create secret ... (see README)
+          volumeMounts:
+            - name: trajectory-storage
+              mountPath: /trajectories
+            - name: scaffold
+              mountPath: /scaffold
+          resources:
+            requests:
+              cpu: "4"
+              memory: 16Gi
+            limits:
+              cpu: "8"
+              memory: 32Gi
+              nvidia.com/gpu: "0"   # bump to "1" only if running local model inference
+          securityContext:
+            privileged: true   # required for nested KVM virtualization; see note above
+      volumes:
+        - name: trajectory-storage
+          persistentVolumeClaim:
+            claimName: trajectory-logs-pvc
+        - name: scaffold
+          configMap:
+            name: osworld-scaffold-files

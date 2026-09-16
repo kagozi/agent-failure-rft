@@ -1,0 +1,16 @@
+.env
+ROADMAP.md
+CLAUDE.md
+
+# Vendored upstream clone -- not our code, clone it yourself per README.
+# Our actual changes to it live as kubevirt_provider/osworld-integration.patch.
+osworld/
+
+# Local tooling
+.claude/
+__pycache__/
+*.pyc
+
+# scratch/build artifacts
+*.qcow2
+*.qcow2.zip

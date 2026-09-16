@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: trajectory-logs-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  # NRP typically exposes a default StorageClass; check `kubectl get sc`
+  # in your namespace and set storageClassName explicitly if needed.

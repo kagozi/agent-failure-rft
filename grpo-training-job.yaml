@@ -1,0 +1,56 @@
+# Placeholder GRPO / rule-based RFT training job for Paper 2.
+# Not meant to run as-is -- fill in once you've picked your training
+# framework (e.g. TRL's GRPOTrainer, or verl/OpenRLHF) and packaged an
+# image with it + your reward function.
+#
+# Sketch of what this needs, per the UI-R1 / GUI-R1 line of work:
+#   - Base model: Qwen2.5-VL-7B-Instruct (download from Hugging Face)
+#   - ~100-300 curated (screenshot, instruction, correct_action) examples,
+#     drawn from your Paper 1 failure categories (e.g. grounding failures)
+#   - A rule-based reward function: e.g. +1 if predicted click coordinate
+#     falls inside the ground-truth element's bounding box, else 0
+#   - GRPO (group relative policy optimization) rather than PPO -- simpler,
+#     no separate value network, currently the default choice in this space
+#
+# Request a single multi-GPU node to start (4x A100 or similar) -- this is
+# NOT the "thousands of parallel VMs" ComputerRL-style online RL; that's a
+# later-PhD-stage undertaking. This is small-scale, data-efficient RFT.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: grpo-rft-paper2
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: grpo-train
+          image: your-registry/grpo-gui-rft:latest   # TODO: build this image
+          command: ["python", "train_grpo.py"]
+          args:
+            - "--base_model=Qwen/Qwen2.5-VL-7B-Instruct"
+            - "--dataset=/data/grounding_failures_curated.jsonl"
+            - "--reward_fn=bbox_hit"
+            - "--output_dir=/checkpoints"
+          resources:
+            requests:
+              cpu: "16"
+              memory: 64Gi
+            limits:
+              cpu: "32"
+              memory: 128Gi
+              nvidia.com/gpu: "4"
+          volumeMounts:
+            - name: checkpoints
+              mountPath: /checkpoints
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: checkpoints
+          persistentVolumeClaim:
+            claimName: model-checkpoints-pvc
+        - name: data
+          persistentVolumeClaim:
+            claimName: training-data-pvc

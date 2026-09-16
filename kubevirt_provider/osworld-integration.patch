@@ -1,0 +1,156 @@
+diff --git a/desktop_env/desktop_env.py b/desktop_env/desktop_env.py
+index cdaf07a6..c741ef01 100644
+--- a/desktop_env/desktop_env.py
++++ b/desktop_env/desktop_env.py
+@@ -152,7 +152,7 @@ class DesktopEnv(gym.Env):
+         # Track whether environment has been used (step/setup) to optimize snapshot revert
+         # docker, aws, gcp, azure are always unused as the emulator starts from a clean state 
+         # vmware, virtualbox are always used as the emulator starts from a dirty state
+-        if self.provider_name in {"docker", "aws", "gcp", "azure", "aliyun", "volcengine", "fastvm", "pyromind", "modal", "daytona"}:
++        if self.provider_name in {"docker", "aws", "gcp", "azure", "aliyun", "volcengine", "fastvm", "pyromind", "modal", "daytona", "kubevirt"}:
+             self.is_environment_used = False
+         elif self.provider_name in {"vmware", "virtualbox"}:
+             self.is_environment_used = True
+diff --git a/desktop_env/providers/__init__.py b/desktop_env/providers/__init__.py
+index 9f975693..b9c89efe 100644
+--- a/desktop_env/providers/__init__.py
++++ b/desktop_env/providers/__init__.py
+@@ -55,5 +55,9 @@ def create_vm_manager_and_provider(provider_name: str, region: str, use_proxy: b
+         from desktop_env.providers.pyromind.manager import PyromindVMManager
+         from desktop_env.providers.pyromind.provider import PyromindProvider
+         return PyromindVMManager(), PyromindProvider(region)
++    elif provider_name == "kubevirt":
++        from desktop_env.providers.kubevirt.manager import KubeVirtVMManager
++        from desktop_env.providers.kubevirt.provider import KubeVirtProvider
++        return KubeVirtVMManager(), KubeVirtProvider(region)
+     else:
+         raise NotImplementedError(f"{provider_name} not implemented!")
+diff --git a/evaluation_examples/test_smoke.json b/evaluation_examples/test_smoke.json
+new file mode 100644
+index 00000000..c582cb94
+--- /dev/null
++++ b/evaluation_examples/test_smoke.json
+@@ -0,0 +1,5 @@
++{
++  "os": [
++    "5ea617a3-0e86-4ba6-aab2-dac9aa2e8d57"
++  ]
++}
+diff --git a/lib_run_single.py b/lib_run_single.py
+index 81972b1e..937c64cf 100644
+--- a/lib_run_single.py
++++ b/lib_run_single.py
+@@ -14,6 +14,12 @@ logger = logging.getLogger("desktopenv.experiment")
+ def run_single_example(agent, env, example, max_steps, instruction, args, example_result_dir, scores):
+     runtime_logger = setup_logger(example, example_result_dir)
+ 
++    # If the agent supports episode-level trajectory logging (InstrumentedAgent),
++    # start a new episode log now -- gated on hasattr so this stays a no-op for
++    # any other agent passed to this function.
++    if hasattr(agent, "start_episode"):
++        agent.start_episode(example["id"], instruction)
++
+     # Reset environment first to get fresh VM IP
+     env.reset(task_config=example)
+ 
+@@ -22,7 +28,7 @@ def run_single_example(agent, env, example, max_steps, instruction, args, exampl
+         agent.reset(runtime_logger, vm_ip=env.vm_ip)
+     except Exception as e:
+         agent.reset(vm_ip=env.vm_ip)
+-    
++
+     time.sleep(60) # Wait for the environment to be ready
+     obs = env._get_obs() # Get the initial observation
+     done = False
+@@ -67,10 +73,13 @@ def run_single_example(agent, env, example, max_steps, instruction, args, exampl
+     scores.append(result)
+     with open(os.path.join(example_result_dir, "result.txt"), "w", encoding="utf-8") as f:
+         f.write(f"{result}\n")
+-    
++
++    if hasattr(agent, "end_episode"):
++        agent.end_episode({"success": bool(result), "score": result})
++
+     # Log task completion to results.json
+     log_task_completion(example, result, example_result_dir, args)
+-    
++
+     env.controller.end_recording(os.path.join(example_result_dir, "recording.mp4"))
+ 
+ 
+diff --git a/mm_agents/agent.py b/mm_agents/agent.py
+index 592e4c40..9dbc48af 100644
+--- a/mm_agents/agent.py
++++ b/mm_agents/agent.py
+@@ -581,6 +581,48 @@ class PromptAgent:
+     )
+     def call_llm(self, payload):
+ 
++        nrp_base_url = os.environ.get("NRP_API_BASE")
++        if nrp_base_url:
++            # Generic OpenAI-compatible passthrough for NRP-hosted models
++            # (qwen3, gpt-oss, etc). Takes priority over the per-brand
++            # dispatch below because those branches key off self.model's
++            # prefix (e.g. "qwen" -> Alibaba's dashscope SDK, hardcoded to
++            # Aliyun's cloud with no configurable base URL) -- that's wrong
++            # for a self-hosted, OpenAI-compatible endpoint like NRP's.
++            api_url = f"{nrp_base_url}/chat/completions" if nrp_base_url.endswith('/v1') else f"{nrp_base_url}/v1/chat/completions"
++            headers = {
++                "Content-Type": "application/json",
++                "Authorization": f"Bearer {os.environ['NRP_API_KEY']}"
++            }
++            logger.info("Generating content with NRP-hosted model: %s", payload['model'])
++            response = requests.post(api_url, headers=headers, json=payload)
++
++            if response.status_code != 200:
++                logger.error("Failed to call NRP LLM: " + response.text)
++                time.sleep(5)
++                return ""
++
++            message = response.json()['choices'][0]['message']
++            content = message.get('content')
++            if content is None:
++                # NRP's qwen3 is a reasoning model: chain-of-thought goes in
++                # a separate "reasoning" field, and "content" stays null
++                # until reasoning finishes. If max_tokens is too small, the
++                # budget is spent entirely on reasoning (finish_reason
++                # "length") and content never gets produced. Surface this
++                # clearly instead of returning None into parse_actions().
++                logger.error(
++                    "NRP model %s returned no content (finish_reason=%s) -- "
++                    "likely ran out of max_tokens mid-reasoning before "
++                    "producing an answer. Raise --max_tokens. reasoning="
++                    "%r",
++                    payload['model'],
++                    response.json()['choices'][0].get('finish_reason'),
++                    (message.get('reasoning') or '')[:500],
++                )
++                return ""
++            return content
++
+         if payload['model'].startswith("azure-gpt-4o"):
+ 
+             # .env config example :
+diff --git a/run.py b/run.py
+index c24c3ada..10979214 100644
+--- a/run.py
++++ b/run.py
+@@ -13,7 +13,7 @@ from tqdm import tqdm
+ 
+ import lib_run_single
+ from desktop_env.desktop_env import DesktopEnv
+-from mm_agents.agent import PromptAgent
++from instrumented_agent import InstrumentedAgent
+ 
+ # Almost deprecated since it's not multi-env, use run_multienv_*.py instead
+ 
+@@ -148,7 +148,8 @@ def test(args: argparse.Namespace, test_all_meta: dict) -> None:
+         "result_dir": args.result_dir,
+     }
+ 
+-    agent = PromptAgent(
++    agent = InstrumentedAgent(
++        trajectory_dir=os.path.join(args.result_dir, "trajectories"),
+         model=args.model,
+         max_tokens=args.max_tokens,
+         top_p=args.top_p,

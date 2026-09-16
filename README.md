@@ -1,116 +1,71 @@
-# VLN/Embodied-Agent PhD Research Scaffold
+# agent-failure-rft
 
-Working infrastructure for Paper 1 (OSWorld failure taxonomy) and a path
-into Paper 2 (rule-based RFT / GRPO), targeting NRP compute.
+Infrastructure for running [OSWorld](https://github.com/xlang-ai/OSWorld) computer-use-agent evaluations on the [National Research Platform](https://nrp.ai) (NRP), logging full per-step trajectories, and classifying failures into a taxonomy.
+
+The agent is powered by an NRP-hosted open-weight LLM (OpenAI-compatible API) rather than a commercial API. The desktop VM OSWorld drives is provisioned via [KubeVirt](https://kubevirt.io) on NRP's shared Kubernetes cluster, instead of OSWorld's default Docker-based provider (which needs a privileged container to run QEMU with `/dev/kvm` passthrough manually — not appropriate on shared multi-tenant infra).
 
 ## Repo layout
+
 ```
-osworld/              # cloned from xlang-ai/OSWorld (git clone yourself; gitignored here)
-agent/
-  instrumented_agent.py   # wraps OSWorld's PromptAgent, logs full trajectories as JSONL
-eval/
-  failure_taxonomy.py     # LLM-as-judge failure classification over logged trajectories
-k8s/
-  pvc.yaml                 # persistent storage for trajectory logs
-  osworld-job.yaml          # runs OSWorld eval on NRP (KVM caveat -- read the file's header)
-  grpo-training-job.yaml    # skeleton for Paper 2's RFT training (fill in once framework chosen)
-kubevirt_provider/
-  (custom OSWorld Provider targeting NRP via KubeVirt -- see its own
-  KUBEVIRT_GUIDELINE.md for setup; this is what Step 0 below resolved to)
-docs/
-  (add your reading notes / paper summaries here as you go -- see learning roadmap)
+kubevirt_provider/           # custom OSWorld Provider/VMManager, targets NRP via KubeVirt
+  KUBEVIRT_GUIDELINE.md         # full setup: build the VM image, apply the integration patch, run
+  osworld-integration.patch     # git diff against a fresh OSWorld clone -- wires everything in
+  provider.py / manager.py      # implements OSWorld's Provider/VMManager interface
+  config.py                     # all provider config via env vars
+  Dockerfile.containerdisk      # wraps OSWorld's Ubuntu disk as a KubeVirt containerDisk image
+
+instrumented_agent.py        # wraps OSWorld's PromptAgent, logs full step trajectories as JSONL
+failure_taxonomy.py          # LLM-as-judge: classifies failed episodes from trajectory JSONL
+verify_taxonomy.py           # blind human-verification pass against the judge's classifications
+                              # (percent agreement + Cohen's kappa, per-episode confusion matrix)
+
+pvc.yaml                     # k8s PersistentVolumeClaim for trajectory storage
+osworld-job.yaml             # k8s Job manifest for running OSWorld eval on NRP
+grpo-training-job.yaml       # skeleton k8s Job for a later RL fine-tuning pass
+
+osworld/                     # NOT tracked here -- clone xlang-ai/OSWorld yourself (see Setup)
 ```
 
-## Step 0 — Confirm KVM support on your NRP namespace — RESOLVED 2026-09-11
-Confirmed directly against namespace `gai-lina-group`: KubeVirt v1.7.0 is
-deployed cluster-wide, the namespace has full CRUD on
-`virtualmachineinstances.kubevirt.io`, and a smoke-test VM reached
-`Running` in ~16s with confirmed hardware KVM acceleration (`-accel kvm`
-in the guest QEMU process, real `/dev/kvm` char device). NRP support's own
-suggestion ("Maybe kubevirt") in reply to the KVM question panned out.
-
-This means: **don't chase OSWorld's built-in `docker` provider's
-privileged-container-with-raw-`/dev/kvm` approach** — that needs a
-privileged pod, which is a different (and on shared infra, more
-questionable) ask than what was actually tested and confirmed working.
-Use `kubevirt_provider/` instead — a custom `Provider`/`VMManager`
-implementation that boots the same OSWorld Ubuntu disk image via KubeVirt
-VMIs. See `kubevirt_provider/KUBEVIRT_GUIDELINE.md` for the full setup
-(build+push the containerDisk image, drop the directory into your OSWorld
-clone, two small patches to register the provider name).
-
-## Step 1 — Local dev loop (before touching k8s)
-Get the pipeline working on a single task locally first -- much faster to
-debug than iterating through k8s job submissions.
+## Setup
 
 ```bash
-git clone https://github.com/xlang-ai/OSWorld.git
-cd OSWorld
-pip install -r requirements.txt
+git clone https://github.com/xlang-ai/OSWorld.git osworld
+cd osworld
+uv venv --python 3.12 .venv   # must be 3.12, not 3.13 -- see note below
+uv pip install -r <(grep -vE '^(torch~=|transformers~=|accelerate$)' requirements.txt)
+uv pip install kubernetes
 
-# point OSWorld's agent at your NRP-hosted LLM
-export NRP_API_BASE="https://<your-nrp-llm-endpoint>/v1"   # get from NRP LLM API Keys page
-export NRP_API_KEY="<your-key>"
-export NRP_MODEL="qwen3"     # or gpt-oss, per nrp.ai/llms model catalog
-
-cp ../agent/instrumented_agent.py mm_agents/instrumented_agent.py
-# then edit run.py (or write a small run_instrumented.py) to import
-# InstrumentedAgent instead of PromptAgent -- same predict() interface,
-# so this should be close to a 1-line swap. Start with 1-2 tasks from
-# evaluation_examples/ to confirm the trajectory JSONL looks right.
+git apply ../kubevirt_provider/osworld-integration.patch
+cp -r ../kubevirt_provider desktop_env/providers/kubevirt
+cp ../instrumented_agent.py .
 ```
 
-For `--provider_name`, use `kubevirt` (see `kubevirt_provider/
-KUBEVIRT_GUIDELINE.md` for the one-time setup: build+push the
-containerDisk image, `pip install kubernetes`, register the provider).
-This talks to your NRP namespace from your laptop via `kubectl
-port-forward` under the hood, so no k8s job submission needed yet for this
-step -- just `kubectl` pointed at the `nautilus` context, same as it's
-already configured.
+Then follow `kubevirt_provider/KUBEVIRT_GUIDELINE.md` to build and push the containerDisk VM image (one-time, ~20GB) and configure your `.env` (NRP endpoint/key/model, KubeVirt namespace/image).
 
-## Step 2 — Scale to a batch of tasks
-Once a single task round-trips correctly (trajectory JSONL written,
-episode scored), pick your 40-60 task pilot subset (mix across OSWorld's
-categories: OS, Office, Daily, Professional, Workflow -- see
-`evaluation_examples/`) and run the batch, still locally if KVM works on
-your own machine, or move to Step 3 for NRP.
+**Python must be 3.12.** Python 3.13 enabled `ssl.VERIFY_X509_STRICT` by default, which rejects some real-world cluster certificates (including NRP's) that Go's TLS stack — what `kubectl` uses — doesn't require. This surfaces as an opaque `SSLCertVerificationError` from the `kubernetes` Python client even though `kubectl` itself works fine against the same cluster.
 
-## Step 3 — Run on NRP
+## Running an evaluation
+
 ```bash
-kubectl create secret generic nrp-llm-credentials \
-  --from-literal=NRP_API_BASE=https://<endpoint>/v1 \
-  --from-literal=NRP_API_KEY=<key> \
-  --from-literal=NRP_MODEL=qwen3
-
-kubectl apply -f k8s/pvc.yaml
-kubectl apply -f k8s/osworld-job.yaml
-kubectl logs -f job/osworld-eval-run
+cd osworld
+python run.py \
+  --provider_name kubevirt \
+  --observation_type screenshot_a11y_tree \
+  --model qwen3 --max_tokens 4096 \
+  --test_all_meta_path evaluation_examples/test_smoke.json \
+  --result_dir ./results/smoke_test
 ```
-Pull trajectories off the PVC once the job completes (see NRP's docs on
-mounting/copying from a PVC, or add a small pod that mounts it read-only
-and lets you `kubectl cp` out).
 
-## Step 4 — Failure taxonomy
+Trajectories land as JSONL under `<result_dir>/trajectories/`. `--max_tokens` matters more than it looks — see `KUBEVIRT_GUIDELINE.md` for why reasoning models need a much larger budget than OSWorld's default.
+
+## Failure taxonomy pass
+
 ```bash
-python eval/failure_taxonomy.py \
-  --trajectory_dir trajectories/ \
-  --out failures.jsonl \
-  --judge_model qwen3
+python failure_taxonomy.py --trajectory_dir trajectories/ --out failures.jsonl
+python verify_taxonomy.py --failures failures.jsonl --trajectory_dir trajectories/ --out human_verification.jsonl
+python verify_taxonomy.py --report --failures failures.jsonl --out human_verification.jsonl
 ```
-Then hand-verify ~15-20% against raw trajectories (open the JSONL, read
-the steps, agree/disagree with the judge's category) -- report this
-agreement rate in the paper; it's what makes the taxonomy credible to
-reviewers rather than an unvalidated LLM opinion.
 
-## Step 5 — Paper 2 on-ramp (later)
-Once Paper 1's taxonomy identifies your target failure mode (e.g.
-grounding failures), curate 100-300 examples from those failures into
-training data, pick a GRPO framework (TRL, verl, or OpenRLHF all have
-GRPO support), fill in `k8s/grpo-training-job.yaml`, and request a
-multi-GPU NRP allocation for the actual training run.
+## Current status
 
-## Learning-roadmap companion
-Keep a running note in `docs/` as you read -- one file per paper, 3-sentence
-summary (claim / evidence / gap), so by the time you write Paper 1's related
-work section you have a ready-made annotated bibliography instead of
-re-reading everything from scratch.
+See `kubevirt_provider/KUBEVIRT_GUIDELINE.md` for what's confirmed working, what's a known blocker, and what's still unverified against a real run.
