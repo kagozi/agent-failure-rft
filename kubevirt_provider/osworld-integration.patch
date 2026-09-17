@@ -116,7 +116,7 @@ index 00000000..c582cb94
 +  ]
 +}
 diff --git a/lib_run_single.py b/lib_run_single.py
-index 81972b1e..937c64cf 100644
+index 81972b1e..7f3351b0 100644
 --- a/lib_run_single.py
 +++ b/lib_run_single.py
 @@ -14,6 +14,12 @@ logger = logging.getLogger("desktopenv.experiment")
@@ -141,7 +141,28 @@ index 81972b1e..937c64cf 100644
      time.sleep(60) # Wait for the environment to be ready
      obs = env._get_obs() # Get the initial observation
      done = False
-@@ -67,10 +73,13 @@ def run_single_example(agent, env, example, max_steps, instruction, args, exampl
+@@ -33,6 +39,20 @@ def run_single_example(agent, env, example, max_steps, instruction, args, exampl
+             instruction,
+             obs
+         )
++        # Circuit breaker for sustained API failure (InstrumentedAgent only,
++        # gated on hasattr): stop the episode immediately once several
++        # consecutive steps have come back with no usable response at all,
++        # instead of burning the rest of the step budget against an
++        # endpoint that has already shown it won't respond. Confirmed
++        # 2026-09-17: without this, a single unlucky task could take up to
++        # ~45 minutes to fail out normally.
++        if getattr(agent, "should_abort_episode", False):
++            logger.warning(
++                "Aborting episode early: sustained API failure (no usable "
++                "response for multiple consecutive steps)."
++            )
++            done = True
++            break
+         for action in actions:
+             # Capture the timestamp before executing the action
+             action_timestamp = datetime.datetime.now().strftime("%Y%m%d@%H%M%S%f")
+@@ -67,10 +87,13 @@ def run_single_example(agent, env, example, max_steps, instruction, args, exampl
      scores.append(result)
      with open(os.path.join(example_result_dir, "result.txt"), "w", encoding="utf-8") as f:
          f.write(f"{result}\n")
@@ -158,7 +179,7 @@ index 81972b1e..937c64cf 100644
  
  
 diff --git a/mm_agents/agent.py b/mm_agents/agent.py
-index 592e4c40..c941e6b0 100644
+index 592e4c40..5aa62ff8 100644
 --- a/mm_agents/agent.py
 +++ b/mm_agents/agent.py
 @@ -263,6 +263,7 @@ class PromptAgent:
@@ -169,7 +190,7 @@ index 592e4c40..c941e6b0 100644
  
          if observation_type == "screenshot":
              if action_space == "computer_13":
-@@ -581,6 +582,100 @@ class PromptAgent:
+@@ -581,6 +582,117 @@ class PromptAgent:
      )
      def call_llm(self, payload):
  
@@ -213,7 +234,24 @@ index 592e4c40..c941e6b0 100644
 +            # still possible and worth surviving -- just don't assume every
 +            # sustained run of 500s is NRP being down without checking
 +            # payload size first.
-+            backoff_schedule = [5, 10, 20, 40, 60, 60]
++            #
++            # FOLLOW-UP (2026-09-17): even with the payload-size bug fixed
++            # (max_trajectory_length=1, ~300KB-3.5MB payloads), sustained
++            # 500 runs still happen sometimes -- confirmed genuinely
++            # transient this time (an isolated manual request with the same
++            # payload shape succeeded while the job's own calls kept
++            # failing), not deterministic. Given that, a *longer* per-call
++            # backoff doesn't actually buy more successful recoveries -- it
++            # was already observed riding out only part of a real multi-
++            # minute stretch. What bounds wasted time now is the episode-
++            # level circuit breaker in instrumented_agent.py
++            # (should_abort_episode / lib_run_single.py's check), which
++            # stops a whole task after a couple of fully-exhausted steps
++            # instead of continuing for the entire step budget. Shrunk this
++            # schedule accordingly: fewer, faster attempts per call, and
++            # let the circuit breaker handle sustained degradation instead
++            # of each individual call trying harder.
++            backoff_schedule = [5, 10, 20]
 +            for attempt in range(len(backoff_schedule)):
 +                logger.info(
 +                    "Generating content with NRP-hosted model: %s (attempt %d/%d)",

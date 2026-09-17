@@ -54,6 +54,7 @@ class InstrumentedAgent:
         observation_type: str = "screenshot_a11y_tree",
         action_space: str = "pyautogui",
         max_trajectory_length: int = 15,
+        max_consecutive_empty_responses: int = 2,
         **prompt_agent_kwargs: Any,
     ):
         self.model = model or os.environ.get("NRP_MODEL", "qwen3")
@@ -89,6 +90,20 @@ class InstrumentedAgent:
         self._step_idx: int = 0
         self._start_time: Optional[float] = None
 
+        # Circuit breaker for sustained API failure. Per-call retries
+        # (mm_agents/agent.py's NRP branch) already absorb brief blips --
+        # waiting *longer* on a single call doesn't help once the backend
+        # is degraded for minutes, it just delays the same outcome. What
+        # actually bounds wasted wall-clock time on a genuinely bad
+        # stretch is stopping the *episode* early: confirmed 2026-09-17
+        # that a single unlucky task could otherwise burn its full step
+        # budget (up to ~45 min at the old 6-attempt/60s-cap backoff)
+        # retrying against an endpoint that had already failed completely
+        # on the previous step too.
+        self._max_consecutive_empty_responses = max_consecutive_empty_responses
+        self._consecutive_empty_responses = 0
+        self._abort_reason: Optional[str] = None
+
     # ---- lifecycle -----------------------------------------------------
 
     def start_episode(self, task_id: str, instruction: str) -> None:
@@ -98,6 +113,8 @@ class InstrumentedAgent:
         self._step_idx = 0
         self._start_time = time.time()
         self._log_path = self.trajectory_dir / f"{self._episode_id}.jsonl"
+        self._consecutive_empty_responses = 0
+        self._abort_reason = None
 
         self._write_record({
             "record_type": "episode_start",
@@ -122,6 +139,13 @@ class InstrumentedAgent:
         step_start = time.time()
 
         response, actions = self._inner.predict(instruction, obs)
+
+        if response:
+            self._consecutive_empty_responses = 0
+        else:
+            self._consecutive_empty_responses += 1
+            if self._consecutive_empty_responses >= self._max_consecutive_empty_responses:
+                self._abort_reason = "sustained_api_failure"
 
         record = {
             "record_type": "step",
@@ -149,6 +173,18 @@ class InstrumentedAgent:
         self._step_idx += 1
         return response, actions
 
+    @property
+    def should_abort_episode(self) -> bool:
+        """
+        True once `max_consecutive_empty_responses` steps in a row have
+        come back with no usable model response at all -- checked by
+        lib_run_single.py's step loop (see osworld-integration.patch) so
+        it can end the episode immediately instead of burning the rest of
+        its step budget against an endpoint that has already shown it
+        won't respond.
+        """
+        return self._abort_reason is not None
+
     def end_episode(self, result: Dict[str, Any]) -> None:
         """
         Call once after the OSWorld harness scores the episode.
@@ -160,6 +196,12 @@ class InstrumentedAgent:
             "episode_id": self._episode_id,
             "num_steps": self._step_idx,
             "total_time_s": round(time.time() - self._start_time, 2) if self._start_time else None,
+            # None on a normal completion (step budget exhausted, or the
+            # agent/evaluator ended the episode) -- "sustained_api_failure"
+            # if the circuit breaker cut it short. Downstream analysis
+            # (failure_taxonomy.py) should treat the latter as infra noise,
+            # not a model capability failure.
+            "abort_reason": self._abort_reason,
             **result,
         })
 
