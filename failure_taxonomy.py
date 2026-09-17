@@ -28,6 +28,7 @@ literature, not a fixed standard):
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 from typing import Dict, List
 
@@ -91,12 +92,34 @@ def judge_episode(client: openai.OpenAI, model: str, episode: Dict) -> Dict:
         trajectory_text=format_trajectory(episode["steps"]),
         taxonomy_list="\n".join(f"- {t}" for t in TAXONOMY),
     )
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.0,
-    )
-    raw = resp.choices[0].message.content
+    # max_tokens set explicitly (not left to the API's default): NRP's
+    # qwen3 is a reasoning model that puts chain-of-thought in a separate
+    # field from the final answer -- confirmed elsewhere in this project
+    # that too small a budget produces null content, not just a short
+    # response. temperature=0.0 for judge consistency across a re-run.
+    for attempt in range(3):
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=4096,
+                # Explicit per-request timeout -- without one, the SDK's
+                # default can leave a single hung request blocking for a
+                # very long time with no error raised at all. Confirmed
+                # 2026-09-17: one episode stalled 30+ minutes on an
+                # established-but-silent connection before this was added.
+                timeout=90,
+            )
+            raw = resp.choices[0].message.content
+            if not raw:
+                raise ValueError("empty content (judge model likely exhausted max_tokens on reasoning)")
+            break
+        except Exception as e:  # noqa: BLE001 -- one bad episode shouldn't kill a 30+ episode batch
+            if attempt == 2:
+                return {"primary_category": "OTHER", "confidence": "low",
+                        "failing_step_idx": -1, "rationale": f"JUDGE_CALL_FAILED: {e}"}
+            time.sleep(5 * (attempt + 1))
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
@@ -110,36 +133,77 @@ def main():
     ap.add_argument("--trajectory_dir", required=True)
     ap.add_argument("--out", default="failures.jsonl")
     ap.add_argument("--judge_model", default=os.environ.get("NRP_JUDGE_MODEL", "qwen3"))
+    ap.add_argument("--resume", action="store_true",
+                     help="Skip episodes already present in --out instead of truncating it. "
+                          "Confirmed 2026-09-17 worth having: a single stuck request can stall "
+                          "the whole batch, and re-judging already-done episodes wastes real "
+                          "API calls on a 30+ episode run.")
     args = ap.parse_args()
 
     client = openai.OpenAI(
         base_url=os.environ["NRP_API_BASE"],
         api_key=os.environ["NRP_API_KEY"],
+        # The SDK's own internal retry logic (default max_retries=2)
+        # operates independently of judge_episode's explicit retry loop --
+        # confirmed 2026-09-17 this compounds badly: 3 outer attempts, each
+        # potentially retried 2-3 more times internally by the SDK before
+        # the 90s per-call timeout even has a chance to surface, stalled a
+        # single episode for 20+ minutes. Disabled here so there's exactly
+        # one retry policy in effect, the one judge_episode implements.
+        max_retries=0,
     )
 
     traj_dir = Path(args.trajectory_dir)
     out_records = []
+    excluded_infra = 0
+
+    already_judged = set()
+    if args.resume and os.path.exists(args.out):
+        with open(args.out, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    already_judged.add(json.loads(line)["episode_id"])
+        print(f"Resuming: {len(already_judged)} episode(s) already judged, will skip.")
+    else:
+        # Truncate/create the output file once, then append per-episode
+        # below -- a crash partway through a 30+ episode batch (a real risk
+        # given NRP's observed intermittent flakiness) shouldn't lose
+        # already-judged work within *this* run; --resume handles picking
+        # back up across runs.
+        open(args.out, "w", encoding="utf-8").close()
 
     for path in sorted(traj_dir.glob("*.jsonl")):
         episode = load_episode(path)
         if episode["end"] is None:
             continue  # incomplete run, skip
+        if episode["start"]["episode_id"] in already_judged:
+            continue
         if episode["end"].get("success"):
             continue  # only judge failures
+        if episode["end"].get("abort_reason") == "sustained_api_failure":
+            # Circuit-breaker abort (instrumented_agent.py) -- the episode
+            # never got a real chance to succeed or fail on its own merits,
+            # so judging it would mislabel infra noise as a model capability
+            # failure. Excluded from judging entirely, not just scored 0.
+            excluded_infra += 1
+            continue
 
         judgment = judge_episode(client, args.judge_model, episode)
-        out_records.append({
+        record = {
             "episode_id": episode["start"]["episode_id"],
             "task_id": episode["start"]["task_id"],
             "num_steps": episode["end"].get("num_steps"),
             **judgment,
-        })
+        }
+        out_records.append(record)
+        with open(args.out, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
         print(f"{episode['start']['episode_id']}: {judgment['primary_category']} "
               f"({judgment['confidence']})")
 
-    with open(args.out, "w", encoding="utf-8") as f:
-        for r in out_records:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    if excluded_infra:
+        print(f"\nExcluded {excluded_infra} episode(s) aborted by the circuit "
+              f"breaker (sustained_api_failure) -- not judged, not counted below.")
 
     # quick summary
     from collections import Counter
