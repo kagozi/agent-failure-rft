@@ -57,7 +57,15 @@ metadata:
   labels:
     app: osworld-agent-research
 spec:
-  backoffLimit: 0
+  # 0 -> 5 (2026-09-19): the initial VM boot (DesktopEnv construction,
+  # before the per-task try/except in run.py's loop even starts) isn't
+  # protected by any retry of its own -- confirmed directly that a node
+  # can hit a transient image-pull network failure here (GHCR connection
+  # reset), which would otherwise crash the whole job outright. A Job
+  # restart reschedules to a (likely different) node and resumes cleanly
+  # via run.py's get_unfinished() check, so this is real, working
+  # resilience for a multi-day unattended run, not just a bigger number.
+  backoffLimit: 5
   template:
     spec:
       restartPolicy: Never

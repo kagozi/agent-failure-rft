@@ -309,7 +309,7 @@ index 592e4c40..5aa62ff8 100644
  
              # .env config example :
 diff --git a/run.py b/run.py
-index c24c3ada..c92cc8ba 100644
+index c24c3ada..4223ee4a 100644
 --- a/run.py
 +++ b/run.py
 @@ -7,13 +7,14 @@ import datetime
@@ -328,17 +328,24 @@ index c24c3ada..c92cc8ba 100644
  
  # Almost deprecated since it's not multi-env, use run_multienv_*.py instead
  
-@@ -148,7 +149,8 @@ def test(args: argparse.Namespace, test_all_meta: dict) -> None:
+@@ -148,7 +149,15 @@ def test(args: argparse.Namespace, test_all_meta: dict) -> None:
          "result_dir": args.result_dir,
      }
  
 -    agent = PromptAgent(
 +    agent = InstrumentedAgent(
-+        trajectory_dir=os.path.join(args.result_dir, "trajectories"),
++        # Scoped by model, not just result_dir: needed for running multiple
++        # models' pilots concurrently against the same PVC (separate k8s
++        # jobs, same shared storage) -- without this, every model's
++        # trajectories land in one shared folder with no directory-level
++        # way to tell them apart (each file's own "model" field is still
++        # correct, but that's cold comfort when you want to point
++        # failure_taxonomy.py at just one model's data).
++        trajectory_dir=os.path.join(args.result_dir, "trajectories", args.model),
          model=args.model,
          max_tokens=args.max_tokens,
          top_p=args.top_p,
-@@ -170,6 +172,22 @@ def test(args: argparse.Namespace, test_all_meta: dict) -> None:
+@@ -170,6 +179,22 @@ def test(args: argparse.Namespace, test_all_meta: dict) -> None:
          vm_secret_mounts=args.vm_secret_mount,
      )
  

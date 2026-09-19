@@ -1,0 +1,82 @@
+# Generated from osworld-job.yaml -- one of 5 concurrent per-model jobs
+# for the full-369-task OSWorld pilot (2026-09-18). See osworld-job.yaml for
+# full prerequisites/setup notes; this file only documents what's different
+# for running multiple models in parallel against the same PVC.
+#
+# NRP_MODEL is set explicitly below, overriding the shared
+# nrp-llm-credentials secret's own NRP_MODEL value -- Kubernetes resolves
+# an explicit `env:` entry ahead of the same key sourced via `envFrom:`,
+# so each of the 5 jobs targets a different model while sharing one
+# secret for NRP_API_BASE/NRP_API_KEY.
+#
+# Requires the PVC to be ReadWriteMany (pvc.yaml, rook-cephfs) -- RWO
+# blocks any second pod from mounting it while one job is still running,
+# confirmed directly (Multi-Attach error) before this was changed.
+#
+# Usage:
+#   kubectl apply -f jobs/osworld-eval-qwen3.yaml
+#   kubectl logs -f job/osworld-eval-qwen3 -n gai-lina-group
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: osworld-eval-qwen3
+  namespace: gai-lina-group
+  labels:
+    app: osworld-agent-research
+    model: qwen3
+spec:
+  # 0 -> 5 (2026-09-19): the initial VM boot (DesktopEnv construction,
+  # before the per-task try/except in run.py's loop even starts) isn't
+  # protected by any retry of its own -- confirmed directly that a node
+  # can hit a transient image-pull network failure here (GHCR connection
+  # reset), which would otherwise crash the whole job outright. A Job
+  # restart reschedules to a (likely different) node and resumes cleanly
+  # via run.py's get_unfinished() check, so this is real, working
+  # resilience for a multi-day unattended run, not just a bigger number.
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: osworld-runner
+      containers:
+        - name: osworld-runner
+          image: ghcr.io/kagozi/osworld-runner:latest
+          command: ["/bin/sh", "-c"]
+          args:
+            - >-
+              exec python run.py
+              --provider_name kubevirt
+              --observation_type screenshot_a11y_tree
+              --model "$NRP_MODEL"
+              --max_tokens 4096
+              --max_steps 15
+              --max_trajectory_length 1
+              --test_all_meta_path evaluation_examples/test_all.json
+              --result_dir /trajectories
+          env:
+            - name: KUBEVIRT_NAMESPACE
+              value: gai-lina-group
+            - name: KUBEVIRT_BASE_IMAGE
+              value: ghcr.io/kagozi/osworld-ubuntu:latest
+            - name: KUBEVIRT_IN_CLUSTER
+              value: "1"
+            - name: NRP_MODEL
+              value: "qwen3"
+          envFrom:
+            - secretRef:
+                name: nrp-llm-credentials
+          volumeMounts:
+            - name: trajectory-storage
+              mountPath: /trajectories
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "1200m"
+              memory: 2400Mi
+      volumes:
+        - name: trajectory-storage
+          persistentVolumeClaim:
+            claimName: trajectory-logs-pvc

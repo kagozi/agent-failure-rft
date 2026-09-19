@@ -4,8 +4,17 @@ metadata:
   name: trajectory-logs-pvc
   namespace: gai-lina-group
 spec:
+  # ReadWriteMany (not Once): 2026-09-18, running 5 models' full-369-task
+  # pilots as concurrent k8s jobs against this same PVC (each model's
+  # results land in its own model-named subdirectory -- see run.py's
+  # per-model trajectory_dir fix -- so there's no write collision, just a
+  # need for more than one pod to mount it at a time). rook-cephfs
+  # (CephFS-backed) supports RWX; the earlier RWO choice was fine for a
+  # single sequential job but blocks concurrent mounts entirely --
+  # confirmed this directly (Multi-Attach error) trying to inspect the PVC
+  # while a job was still running under RWO.
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteMany
   # No StorageClass on this cluster is marked default (confirmed via
   # `kubectl get sc` -- every class showed DEFAULT=<none>), so this must be
   # explicit or the PVC stays Pending forever. ceph-rbd,
@@ -15,8 +24,12 @@ spec:
   # non-Ceph fallback. Switched to rook-cephfs (a separate, non-central
   # Ceph pool) once the central pool's outage was confirmed distinct from
   # this one -- also what several other long-lived PVCs in this namespace
-  # already use successfully.
+  # already use successfully, and (unlike linstor-sdsu) supports RWX.
   storageClassName: rook-cephfs
   resources:
     requests:
-      storage: 20Gi
+      # Bumped from 20Gi: the 50-task/1-model pilot used ~500MB total
+      # (screenshots + recordings + trajectories). Scaling to 369 tasks x
+      # 5 models is roughly 37x that -- sized with real headroom rather
+      # than cutting it close mid-batch.
+      storage: 150Gi

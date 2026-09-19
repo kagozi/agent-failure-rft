@@ -14,3 +14,10 @@ __pycache__/
 # scratch/build artifacts
 *.qcow2
 *.qcow2.zip
+
+# Pilot run data -- copied down from the PVC for local analysis
+# (failure_taxonomy.py / verify_taxonomy.py), not source, and large.
+pilot_trajectories/
+pilot_50_backup/
+failures.jsonl
+human_verification.jsonl
