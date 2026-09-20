@@ -309,15 +309,17 @@ index 592e4c40..5aa62ff8 100644
  
              # .env config example :
 diff --git a/run.py b/run.py
-index c24c3ada..4223ee4a 100644
+index c24c3ada..ef9d217d 100644
 --- a/run.py
 +++ b/run.py
-@@ -7,13 +7,14 @@ import datetime
+@@ -7,13 +7,16 @@ import datetime
  import json
  import logging
  import os
 +import signal
  import sys
++import threading
++import time
  
  from tqdm import tqdm
  
@@ -328,7 +330,7 @@ index c24c3ada..4223ee4a 100644
  
  # Almost deprecated since it's not multi-env, use run_multienv_*.py instead
  
-@@ -148,7 +149,15 @@ def test(args: argparse.Namespace, test_all_meta: dict) -> None:
+@@ -148,7 +151,15 @@ def test(args: argparse.Namespace, test_all_meta: dict) -> None:
          "result_dir": args.result_dir,
      }
  
@@ -345,7 +347,7 @@ index c24c3ada..4223ee4a 100644
          model=args.model,
          max_tokens=args.max_tokens,
          top_p=args.top_p,
-@@ -170,6 +179,22 @@ def test(args: argparse.Namespace, test_all_meta: dict) -> None:
+@@ -170,6 +181,67 @@ def test(args: argparse.Namespace, test_all_meta: dict) -> None:
          vm_secret_mounts=args.vm_secret_mount,
      )
  
@@ -364,6 +366,51 @@ index c24c3ada..4223ee4a 100644
 +        sys.exit(1)
 +
 +    signal.signal(signal.SIGTERM, _cleanup_on_terminate)
++
++    # Liveness watchdog: OSWorld's own setup-retry loop (guest server
++    # unreachable -> "retry: N/20" -> exhausted -> reset() just tries
++    # again from scratch) can loop forever without ever raising an
++    # exception. Confirmed 2026-09-20: this stalled two separate jobs for
++    # 10-13 hours each with the container reporting fully healthy the
++    # whole time (0 restarts) -- nothing about that state ever crashes on
++    # its own, so Kubernetes' backoffLimit-based recovery never triggers.
++    # This thread tracks wall-clock time since the last file was written
++    # under this model's own results directory (scoped, not the shared
++    # PVC root -- other models' concurrent progress must not mask this
++    # one being stuck) and sends SIGTERM to self once that exceeds
++    # STALL_TIMEOUT_SEC, reusing the cleanup handler above so the VM
++    # still gets torn down properly instead of orphaned.
++    STALL_TIMEOUT_SEC = 1800  # 30 min -- well above any normal single-step delay
++    watchdog_dir = os.path.join(
++        args.result_dir, args.action_space, args.observation_type, args.model
++    )
++
++    def _liveness_watchdog(start_time):
++        last_activity = start_time
++        while True:
++            time.sleep(60)
++            for root, _, files in os.walk(watchdog_dir):
++                for fname in files:
++                    try:
++                        mtime = os.path.getmtime(os.path.join(root, fname))
++                    except OSError:
++                        continue
++                    if mtime > last_activity:
++                        last_activity = mtime
++            stalled_for = time.time() - last_activity
++            if stalled_for > STALL_TIMEOUT_SEC:
++                logger.error(
++                    "Liveness watchdog: no progress under %s for %.0fs "
++                    "(limit %.0fs) -- harness appears stuck. Sending "
++                    "SIGTERM to self to trigger a clean restart.",
++                    watchdog_dir, stalled_for, STALL_TIMEOUT_SEC,
++                )
++                os.kill(os.getpid(), signal.SIGTERM)
++                return
++
++    threading.Thread(
++        target=_liveness_watchdog, args=(time.time(),), daemon=True
++    ).start()
 +
      for domain in tqdm(test_all_meta, desc="Domain"):
          for example_id in tqdm(test_all_meta[domain], desc="Example", leave=False):
