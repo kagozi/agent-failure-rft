@@ -65,7 +65,17 @@ spec:
   # restart reschedules to a (likely different) node and resumes cleanly
   # via run.py's get_unfinished() check, so this is real, working
   # resilience for a multi-day unattended run, not just a bigger number.
-  backoffLimit: 5
+    # 5 -> 500 (2026-09-21): the liveness watchdog (run.py) converts
+  # previously-undetectable multi-hour silent stalls into fast ~30min
+  # recoveries -- but that means MORE frequent restarts, not fewer,
+  # since it now catches every stall instead of just the ones that
+  # happened to crash on their own. Measured ~1 failure/hour/model
+  # once the watchdog was live (each one a genuine stuck retry loop
+  # somewhere in OSWorld's own controllers -- confirmed via logs, not
+  # a watchdog false-positive), which would have exhausted a limit of
+  # 5 in about a day. 500 costs nothing extra when things are healthy;
+  # it only matters when you'd otherwise hit the ceiling.
+  backoffLimit: 500
   template:
     spec:
       restartPolicy: Never
