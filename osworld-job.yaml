@@ -108,6 +108,20 @@ spec:
           volumeMounts:
             - name: trajectory-storage
               mountPath: /trajectories
+            # Mounted as individual files (subPath), not the whole
+            # directory, so the image's baked-in settings.yml at this same
+            # path isn't hidden by the volume mount. Added 2026-09-21 to
+            # recover the ~3.8% of multi_apps tasks that need Google Drive
+            # access and were failing at setup with a missing
+            # client_secrets.json. Credential lives in a Secret, never in
+            # the (public) runner image -- see README/commit message for
+            # the one-time local OAuth steps that produced it.
+            - name: googledrive-creds
+              mountPath: /workspace/osworld/evaluation_examples/settings/googledrive/client_secrets.json
+              subPath: client_secrets.json
+            - name: googledrive-creds
+              mountPath: /workspace/osworld/evaluation_examples/settings/googledrive/credentials.json
+              subPath: credentials.json
           resources:
             # This pod only orchestrates via the k8s/NRP APIs -- the actual
             # desktop VM is a separate VMI, not nested inside this
@@ -126,3 +140,6 @@ spec:
         - name: trajectory-storage
           persistentVolumeClaim:
             claimName: trajectory-logs-pvc
+        - name: googledrive-creds
+          secret:
+            secretName: googledrive-credentials
