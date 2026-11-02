@@ -21,3 +21,15 @@ pilot_trajectories/
 pilot_50_backup/
 failures.jsonl
 human_verification.jsonl
+*.docx
+*.pdf
+references/*
+paper/*
+
+# Human-verification rubric, ratings, and judge-vs-human agreement findings --
+# this is the actual Paper 1 taxonomy result, kept private until published.
+verification/
+
+# Paper 2 training-data curation artifacts (judge outputs, mined trajectories,
+# pulled screenshots) -- large and not source; regenerate from the PVC.
+taxonomy_full/
