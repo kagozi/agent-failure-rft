@@ -86,6 +86,10 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - >-
+              mkdir -p evaluation_examples/settings/googledrive &&
+              cp /secrets/googledrive/client_secrets.json evaluation_examples/settings/googledrive/client_secrets.json &&
+              cp /secrets/googledrive/credentials.json evaluation_examples/settings/googledrive/credentials.json &&
+              chmod u+w evaluation_examples/settings/googledrive/credentials.json &&
               exec python run.py
               --provider_name kubevirt
               --observation_type screenshot_a11y_tree
@@ -108,20 +112,16 @@ spec:
           volumeMounts:
             - name: trajectory-storage
               mountPath: /trajectories
-            # Mounted as individual files (subPath), not the whole
-            # directory, so the image's baked-in settings.yml at this same
-            # path isn't hidden by the volume mount. Added 2026-09-21 to
-            # recover the ~3.8% of multi_apps tasks that need Google Drive
-            # access and were failing at setup with a missing
-            # client_secrets.json. Credential lives in a Secret, never in
-            # the (public) runner image -- see README/commit message for
-            # the one-time local OAuth steps that produced it.
+            # Mounted at a staging path, NOT directly onto
+            # evaluation_examples/settings/googledrive/ -- Secret volumes are
+            # always read-only, but PyDrive rewrites credentials.json in
+            # place after refreshing an expired OAuth token. Confirmed
+            # 2026-09-23: 8 multi_apps tasks failed setup with "[Errno 30]
+            # Read-only file system" when a refresh happened to fire during
+            # deepseek-v4-flash's run. The container's args: now cp these
+            # into place on the writable rootfs before launching run.py.
             - name: googledrive-creds
-              mountPath: /workspace/osworld/evaluation_examples/settings/googledrive/client_secrets.json
-              subPath: client_secrets.json
-            - name: googledrive-creds
-              mountPath: /workspace/osworld/evaluation_examples/settings/googledrive/credentials.json
-              subPath: credentials.json
+              mountPath: /secrets/googledrive
           resources:
             # This pod only orchestrates via the k8s/NRP APIs -- the actual
             # desktop VM is a separate VMI, not nested inside this
