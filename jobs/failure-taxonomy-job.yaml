@@ -1,0 +1,271 @@
+# Runs failure_taxonomy.py (LLM-as-judge) against the complete 5-model
+# OSWorld pilot (369/369 tasks each, confirmed 2026-09-23) already sitting
+# on trajectory-logs-pvc. One Job per model, run concurrently -- the
+# original single sequential job (looping deepseek -> gemma -> gemma-small
+# -> kimi -> qwen3 in one pod) was still stuck on deepseek-v4-flash after
+# 100+ minutes (79/369 failures judged and climbing, no gemma output yet):
+# each judge call is a full LLM-as-judge pass over up to 15 trajectory
+# steps, and doing all 5 models' worth serially in one pod was the
+# bottleneck, not judge throughput itself. Splitting into 5 independent
+# Jobs against the same PVC (RWX, confirmed safe for concurrent writers)
+# cuts wall-clock roughly 5x. Each writes to its own
+# /trajectories/taxonomy/<model>_failures.jsonl, so there's no write
+# contention between jobs. --resume is load-bearing for
+# osworld-eval-deepseek-v4-flash's file specifically: it already has ~79
+# judged episodes from the killed sequential job and must not re-judge
+# (wastes real NRP API calls) or truncate them.
+#
+# Doesn't reuse the osworld-runner image -- failure_taxonomy.py only needs
+# the `openai` package and local file reads, no OSWorld/KubeVirt deps, so
+# a plain python:3.12-slim + a ConfigMap for the script avoids a rebuild.
+#
+# Usage:
+#   kubectl create configmap failure-taxonomy-script -n gai-lina-group \
+#     --from-file=failure_taxonomy.py=failure_taxonomy.py
+#   kubectl apply -f jobs/failure-taxonomy-job.yaml
+#   kubectl get pods -n gai-lina-group -l app=failure-taxonomy
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: failure-taxonomy-deepseek-v4-flash
+  namespace: gai-lina-group
+  labels:
+    app: failure-taxonomy
+    model: deepseek-v4-flash
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: taxonomy
+          image: python:3.12-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - >-
+              pip install --no-cache-dir --quiet openai &&
+              mkdir -p /trajectories/taxonomy &&
+              python /scripts/failure_taxonomy.py
+              --trajectory_dir /trajectories/trajectories/deepseek-v4-flash
+              --out /trajectories/taxonomy/deepseek-v4-flash_failures.jsonl
+              --judge_model qwen3
+              --resume
+          envFrom:
+            - secretRef:
+                name: nrp-llm-credentials
+          volumeMounts:
+            - name: trajectory-storage
+              mountPath: /trajectories
+            - name: script
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 768Mi
+            limits:
+              cpu: "600m"
+              memory: 900Mi
+      volumes:
+        - name: trajectory-storage
+          persistentVolumeClaim:
+            claimName: trajectory-logs-pvc
+        - name: script
+          configMap:
+            name: failure-taxonomy-script
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: failure-taxonomy-gemma
+  namespace: gai-lina-group
+  labels:
+    app: failure-taxonomy
+    model: gemma
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: taxonomy
+          image: python:3.12-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - >-
+              pip install --no-cache-dir --quiet openai &&
+              mkdir -p /trajectories/taxonomy &&
+              python /scripts/failure_taxonomy.py
+              --trajectory_dir /trajectories/trajectories/gemma
+              --out /trajectories/taxonomy/gemma_failures.jsonl
+              --judge_model qwen3
+              --resume
+          envFrom:
+            - secretRef:
+                name: nrp-llm-credentials
+          volumeMounts:
+            - name: trajectory-storage
+              mountPath: /trajectories
+            - name: script
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 768Mi
+            limits:
+              cpu: "600m"
+              memory: 900Mi
+      volumes:
+        - name: trajectory-storage
+          persistentVolumeClaim:
+            claimName: trajectory-logs-pvc
+        - name: script
+          configMap:
+            name: failure-taxonomy-script
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: failure-taxonomy-gemma-small
+  namespace: gai-lina-group
+  labels:
+    app: failure-taxonomy
+    model: gemma-small
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: taxonomy
+          image: python:3.12-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - >-
+              pip install --no-cache-dir --quiet openai &&
+              mkdir -p /trajectories/taxonomy &&
+              python /scripts/failure_taxonomy.py
+              --trajectory_dir /trajectories/trajectories/gemma-small
+              --out /trajectories/taxonomy/gemma-small_failures.jsonl
+              --judge_model qwen3
+              --resume
+          envFrom:
+            - secretRef:
+                name: nrp-llm-credentials
+          volumeMounts:
+            - name: trajectory-storage
+              mountPath: /trajectories
+            - name: script
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 768Mi
+            limits:
+              cpu: "600m"
+              memory: 900Mi
+      volumes:
+        - name: trajectory-storage
+          persistentVolumeClaim:
+            claimName: trajectory-logs-pvc
+        - name: script
+          configMap:
+            name: failure-taxonomy-script
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: failure-taxonomy-kimi
+  namespace: gai-lina-group
+  labels:
+    app: failure-taxonomy
+    model: kimi
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: taxonomy
+          image: python:3.12-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - >-
+              pip install --no-cache-dir --quiet openai &&
+              mkdir -p /trajectories/taxonomy &&
+              python /scripts/failure_taxonomy.py
+              --trajectory_dir /trajectories/trajectories/kimi
+              --out /trajectories/taxonomy/kimi_failures.jsonl
+              --judge_model qwen3
+              --resume
+          envFrom:
+            - secretRef:
+                name: nrp-llm-credentials
+          volumeMounts:
+            - name: trajectory-storage
+              mountPath: /trajectories
+            - name: script
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 768Mi
+            limits:
+              cpu: "600m"
+              memory: 900Mi
+      volumes:
+        - name: trajectory-storage
+          persistentVolumeClaim:
+            claimName: trajectory-logs-pvc
+        - name: script
+          configMap:
+            name: failure-taxonomy-script
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: failure-taxonomy-qwen3
+  namespace: gai-lina-group
+  labels:
+    app: failure-taxonomy
+    model: qwen3
+spec:
+  backoffLimit: 20
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: taxonomy
+          image: python:3.12-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - >-
+              pip install --no-cache-dir --quiet openai &&
+              mkdir -p /trajectories/taxonomy &&
+              python /scripts/failure_taxonomy.py
+              --trajectory_dir /trajectories/trajectories/qwen3
+              --out /trajectories/taxonomy/qwen3_failures.jsonl
+              --judge_model qwen3
+              --resume
+          envFrom:
+            - secretRef:
+                name: nrp-llm-credentials
+          volumeMounts:
+            - name: trajectory-storage
+              mountPath: /trajectories
+            - name: script
+              mountPath: /scripts
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 768Mi
+            limits:
+              cpu: "600m"
+              memory: 900Mi
+      volumes:
+        - name: trajectory-storage
+          persistentVolumeClaim:
+            claimName: trajectory-logs-pvc
+        - name: script
+          configMap:
+            name: failure-taxonomy-script
