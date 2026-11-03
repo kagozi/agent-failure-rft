@@ -33,3 +33,8 @@ verification/
 # Paper 2 training-data curation artifacts (judge outputs, mined trajectories,
 # pulled screenshots) -- large and not source; regenerate from the PVC.
 taxonomy_full/
+
+# Prepared GRPO dataset (HF Dataset-on-disk, contains screenshot images) --
+# regenerate from taxonomy_full/ via prepare_grpo_dataset.py.
+grpo_dataset/
+grpo_output/
