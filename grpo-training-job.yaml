@@ -1,56 +1,93 @@
-# Placeholder GRPO / rule-based RFT training job for Paper 2.
-# Not meant to run as-is -- fill in once you've picked your training
-# framework (e.g. TRL's GRPOTrainer, or verl/OpenRLHF) and packaged an
-# image with it + your reward function.
+# GRPO / rule-based RFT training job for Paper 2 -- trains a LoRA adapter
+# on top of Qwen3-VL-8B-Instruct against the click-in-bbox grounding reward.
 #
-# Sketch of what this needs, per the UI-R1 / GUI-R1 line of work:
-#   - Base model: Qwen2.5-VL-7B-Instruct (download from Hugging Face)
-#   - ~100-300 curated (screenshot, instruction, correct_action) examples,
-#     drawn from your Paper 1 failure categories (e.g. grounding failures)
-#   - A rule-based reward function: e.g. +1 if predicted click coordinate
-#     falls inside the ground-truth element's bounding box, else 0
-#   - GRPO (group relative policy optimization) rather than PPO -- simpler,
-#     no separate value network, currently the default choice in this space
+# Framework: TRL's GRPOTrainer (confirmed 2026-11-03 to have native VLM
+# support -- see train_grpo_grounding.py's module docstring for why TRL was
+# chosen over verl/OpenRLHF). Not a custom image: pip-installs trl/peft/
+# accelerate onto an official PyTorch+CUDA base image at container start,
+# matching the pattern already used in jobs/failure-taxonomy-job.yaml
+# (avoids a registry build+push for a script this size).
 #
-# Request a single multi-GPU node to start (4x A100 or similar) -- this is
-# NOT the "thousands of parallel VMs" ComputerRL-style online RL; that's a
-# later-PhD-stage undertaking. This is small-scale, data-efficient RFT.
+# Data: 278 curated (screenshot, instruction, correct_action) examples from
+# Paper 1's GROUNDING_FAILURE episodes -- see prepare_grpo_dataset.py and
+# taxonomy_full/paper2_training_candidates_final.jsonl for how this pool
+# was built. train_grpo_grounding.py expects the *already-prepared*
+# grpo_dataset/{train,eval} HF-Dataset-on-disk directories, not the raw
+# JSONL -- run prepare_grpo_dataset.py locally first, then upload:
+#
+#   python prepare_grpo_dataset.py --out grpo_dataset/
+#   kubectl create configmap grpo-training-scripts -n gai-lina-group \
+#     --from-file=train_grpo_grounding.py=train_grpo_grounding.py \
+#     --from-file=grpo_rewards.py=grpo_rewards.py \
+#     --from-file=prepare_grpo_dataset.py=prepare_grpo_dataset.py
+#   kubectl apply -f k8s/grpo-dataset-pvc.yaml   # one-time, if not already created
+#   # then copy grpo_dataset/ onto that PVC (e.g. via a throwaway busybox
+#   # pod + kubectl cp, same pattern used throughout this project to pull
+#   # data OFF the PVC -- just reversed)
+#   kubectl apply -f grpo-training-job.yaml
+#
+# GPU request: starts at 1 GPU. An 8B VLM with LoRA (r=16, bf16) fits
+# comfortably on a single modern GPU (~20-30GB) -- this is deliberately NOT
+# the 4x-A100 ask in the original placeholder version of this file, which
+# would be a wasteful, slower-to-schedule request on shared infra for a
+# 278-example / LoRA-scale job. NOT YET CONFIRMED: NRP's specific GPU
+# node-selector/product labels for this namespace -- check `kubectl
+# describe nodes` output or NRP office hours before submitting, same as
+# the KVM question was resolved in ROADMAP.md Step 0.
 
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: grpo-rft-paper2
+  namespace: gai-lina-group
+  labels:
+    app: grpo-rft-paper2
 spec:
-  backoffLimit: 0
+  backoffLimit: 1
   template:
     spec:
       restartPolicy: Never
       containers:
         - name: grpo-train
-          image: your-registry/grpo-gui-rft:latest   # TODO: build this image
-          command: ["python", "train_grpo.py"]
+          image: pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
+          command: ["/bin/sh", "-c"]
           args:
-            - "--base_model=Qwen/Qwen2.5-VL-7B-Instruct"
-            - "--dataset=/data/grounding_failures_curated.jsonl"
-            - "--reward_fn=bbox_hit"
-            - "--output_dir=/checkpoints"
-          resources:
-            requests:
-              cpu: "16"
-              memory: 64Gi
-            limits:
-              cpu: "32"
-              memory: 128Gi
-              nvidia.com/gpu: "4"
+            - >-
+              pip install --no-cache-dir --quiet
+              "transformers>=4.57" "trl>=0.26" peft accelerate pillow datasets &&
+              cp /scripts/*.py /workspace/ &&
+              cd /workspace &&
+              accelerate launch train_grpo_grounding.py
+              --dataset_dir /data/grpo_dataset
+              --output_dir /checkpoints/grpo-grounding-v1
+              --num_train_epochs 3
+          # No NRP LLM credentials needed here -- the reward is purely
+          # rule-based (click-in-bbox), no judge/LLM calls at training
+          # time. If Qwen3-VL-8B-Instruct turns out to need a HF token
+          # (rate limits / gating), add an HF_TOKEN secretRef here --
+          # NOT YET CONFIRMED whether this specific repo requires one.
           volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+            - name: dataset
+              mountPath: /data
             - name: checkpoints
               mountPath: /checkpoints
-            - name: data
-              mountPath: /data
+          resources:
+            requests:
+              cpu: "8"
+              memory: 48Gi
+            limits:
+              cpu: "16"
+              memory: 64Gi
+              nvidia.com/gpu: "1"
       volumes:
+        - name: scripts
+          configMap:
+            name: grpo-training-scripts
+        - name: dataset
+          persistentVolumeClaim:
+            claimName: grpo-dataset-pvc
         - name: checkpoints
           persistentVolumeClaim:
             claimName: model-checkpoints-pvc
-        - name: data
-          persistentVolumeClaim:
-            claimName: training-data-pvc
