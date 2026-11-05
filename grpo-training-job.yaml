@@ -20,20 +20,20 @@
 #     --from-file=train_grpo_grounding.py=train_grpo_grounding.py \
 #     --from-file=grpo_rewards.py=grpo_rewards.py \
 #     --from-file=prepare_grpo_dataset.py=prepare_grpo_dataset.py
-#   kubectl apply -f k8s/grpo-dataset-pvc.yaml   # one-time, if not already created
-#   # then copy grpo_dataset/ onto that PVC (e.g. via a throwaway busybox
-#   # pod + kubectl cp, same pattern used throughout this project to pull
-#   # data OFF the PVC -- just reversed)
+#   kubectl apply -f grpo-pvc.yaml   # one-time, if not already created
+#   # then copy grpo_dataset/ onto grpo-dataset-pvc (e.g. via a throwaway
+#   # busybox pod + kubectl cp, same pattern used throughout this project
+#   # to pull data OFF the PVC -- just reversed)
 #   kubectl apply -f grpo-training-job.yaml
 #
-# GPU request: starts at 1 GPU. An 8B VLM with LoRA (r=16, bf16) fits
-# comfortably on a single modern GPU (~20-30GB) -- this is deliberately NOT
-# the 4x-A100 ask in the original placeholder version of this file, which
-# would be a wasteful, slower-to-schedule request on shared infra for a
-# 278-example / LoRA-scale job. NOT YET CONFIRMED: NRP's specific GPU
-# node-selector/product labels for this namespace -- check `kubectl
-# describe nodes` output or NRP office hours before submitting, same as
-# the KVM question was resolved in ROADMAP.md Step 0.
+# GPU request: 1 GPU, constrained to >30GB via nodeAffinity below -- this is
+# deliberately NOT the 4x-A100 ask in the original placeholder version of
+# this file, which would be a wasteful, slower-to-schedule request on
+# shared infra for a 278-example / LoRA-scale job. NRP's GPU node-selector
+# labels RESOLVED 2026-11-03 (see affinity block below) by direct
+# `kubectl get nodes` inspection, same practice as the KVM question in
+# ROADMAP.md Step 0. Still open: whether Qwen3-VL-8B-Instruct needs an HF
+# token to download (see comment near volumeMounts below).
 
 apiVersion: batch/v1
 kind: Job
@@ -47,6 +47,25 @@ spec:
   template:
     spec:
       restartPolicy: Never
+      # NRP is a federated cluster spanning hardware from many contributing
+      # institutions -- confirmed 2026-11-03 via `kubectl get nodes` that the
+      # GPU pool ranges from 8GB Quadro M4000s and 11GB GTX 1080 Tis up to
+      # 143GB H200s, all schedulable under the same nvidia.com/gpu resource
+      # name. Without a constraint, an 8B VLM + LoRA + 8-way GRPO generation
+      # (KV-cache for 8 parallel completions, on top of ~16GB just for bf16
+      # weights) could land on hardware too small to even load the model.
+      # Gt 30000 excludes the 23-24.5GB consumer-tier cards (RTX 3090/4090,
+      # A10, L4, A5000) and lands on A6000/A40/L40/L40S/A100/H100/H200-class
+      # nodes instead -- dozens of qualifying nodes cluster-wide, not a
+      # scheduling bottleneck.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu.memory
+                    operator: Gt
+                    values: ["30000"]
       containers:
         - name: grpo-train
           image: pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
@@ -63,9 +82,9 @@ spec:
               --num_train_epochs 3
           # No NRP LLM credentials needed here -- the reward is purely
           # rule-based (click-in-bbox), no judge/LLM calls at training
-          # time. If Qwen3-VL-8B-Instruct turns out to need a HF token
-          # (rate limits / gating), add an HF_TOKEN secretRef here --
-          # NOT YET CONFIRMED whether this specific repo requires one.
+          # time. No HF_TOKEN needed either -- confirmed 2026-11-03 via
+          # the HF API (gated=false, private=false) that
+          # Qwen/Qwen3-VL-8B-Instruct downloads without authentication.
           volumeMounts:
             - name: scripts
               mountPath: /scripts

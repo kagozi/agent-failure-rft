@@ -1,0 +1,29 @@
+# PVCs for the GRPO training job (grpo-training-job.yaml). Created once,
+# ahead of the job itself:
+#   kubectl apply -f grpo-pvc.yaml
+# Then upload the prepared dataset (grpo_dataset/, built by
+# prepare_grpo_dataset.py) onto grpo-dataset-pvc via a throwaway pod +
+# kubectl cp, same pattern used throughout this project to move data
+# on/off the trajectory-logs-pvc -- just in the opposite direction here.
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grpo-dataset-pvc
+  namespace: gai-lina-group
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-checkpoints-pvc
+  namespace: gai-lina-group
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
