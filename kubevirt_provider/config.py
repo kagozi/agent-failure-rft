@@ -16,8 +16,9 @@ Required:
                              OSWorld guest server on :5000.
 
 Optional:
-  KUBEVIRT_NAMESPACE         — default "gai-lina-group" (confirmed working
-                                NRP/Nautilus namespace as of 2026-09-11).
+  KUBEVIRT_NAMESPACE         — default "gnimpieba-dts-lab" (migrated here
+                                2026-11-04; was "gai-lina-group" through
+                                2026-09-11 - 2026-11-03).
   KUBEVIRT_VM_MEMORY          — default "4Gi", matches Docker provider's
                                  RAM_SIZE default.
   KUBEVIRT_VM_CPU_CORES        — default "4", matches Docker provider's
@@ -62,7 +63,7 @@ from __future__ import annotations
 
 import os
 
-NAMESPACE = os.environ.get("KUBEVIRT_NAMESPACE", "gai-lina-group")
+NAMESPACE = os.environ.get("KUBEVIRT_NAMESPACE", "gnimpieba-dts-lab")
 
 BASE_IMAGE = os.environ.get("KUBEVIRT_BASE_IMAGE") or None
 

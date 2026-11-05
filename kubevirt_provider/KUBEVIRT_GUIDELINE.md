@@ -108,7 +108,7 @@ git apply <path-to-this-scaffold>/kubevirt_provider/osworld-integration.patch
 ## Step 5 — Run
 
 ```bash
-export KUBEVIRT_NAMESPACE=gai-lina-group   # default, override if needed
+export KUBEVIRT_NAMESPACE=gnimpieba-dts-lab   # default, override if needed
 export KUBEVIRT_BASE_IMAGE=<your pushed image ref>   # from Step 1
 
 # Local dev loop (harness on your laptop, default mode):
@@ -142,6 +142,12 @@ namespace-level quota wall at first, but wasn't. Fixed in `provider.py`'s
 `_build_vmi_manifest` by setting `resources.limits` equal to
 `resources.requests`, confirmed 2026-09-15 (pod creation succeeds, VMI
 reaches `Running`).
+
+This is an NRP-standard per-namespace policy, not specific to
+`gai-lina-group` -- confirmed 2026-11-04 that `gnimpieba-dts-lab` has the
+identical LimitRange under the matching name (`gnimpieba-dts-lab-mem`,
+same 100m/1Gi default). The `_build_vmi_manifest` fix above applies
+unchanged after the namespace migration.
 
 ## Resolved: guest ports unreachable (wrong network binding)
 

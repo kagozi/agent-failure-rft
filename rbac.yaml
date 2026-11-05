@@ -9,13 +9,13 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: osworld-runner
-  namespace: gai-lina-group
+  namespace: gnimpieba-dts-lab
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: osworld-runner-vmi
-  namespace: gai-lina-group
+  namespace: gnimpieba-dts-lab
 rules:
   - apiGroups: ["kubevirt.io"]
     resources: ["virtualmachineinstances"]
@@ -25,11 +25,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: osworld-runner-vmi
-  namespace: gai-lina-group
+  namespace: gnimpieba-dts-lab
 subjects:
   - kind: ServiceAccount
     name: osworld-runner
-    namespace: gai-lina-group
+    namespace: gnimpieba-dts-lab
 roleRef:
   kind: Role
   name: osworld-runner-vmi

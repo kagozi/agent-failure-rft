@@ -20,14 +20,14 @@
 #        kubectl apply -f pvc.yaml
 #   5. NRP credentials as a Secret (never commit these as plaintext):
 #        kubectl create secret generic nrp-llm-credentials \
-#          --namespace gai-lina-group \
+#          --namespace gnimpieba-dts-lab \
 #          --from-literal=NRP_API_BASE=https://ellm.nrp-nautilus.io/v1 \
 #          --from-literal=NRP_API_KEY=<your key> \
 #          --from-literal=NRP_MODEL=qwen3
 #
 # Usage:
 #   kubectl apply -f osworld-job.yaml
-#   kubectl logs -f job/osworld-eval-run -n gai-lina-group
+#   kubectl logs -f job/osworld-eval-run -n gnimpieba-dts-lab
 #
 # --max_trajectory_length 1 (overriding OSWorld's default of 3) is load-
 # bearing, not a tuning choice: confirmed 2026-09-16 that NRP's endpoint
@@ -53,7 +53,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: osworld-eval-run
-  namespace: gai-lina-group
+  namespace: gnimpieba-dts-lab
   labels:
     app: osworld-agent-research
 spec:
@@ -101,7 +101,7 @@ spec:
               --result_dir /trajectories
           env:
             - name: KUBEVIRT_NAMESPACE
-              value: gai-lina-group
+              value: gnimpieba-dts-lab
             - name: KUBEVIRT_BASE_IMAGE
               value: ghcr.io/kagozi/osworld-ubuntu:latest
             - name: KUBEVIRT_IN_CLUSTER

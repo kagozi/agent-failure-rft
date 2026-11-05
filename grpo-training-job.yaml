@@ -16,7 +16,7 @@
 # JSONL -- run prepare_grpo_dataset.py locally first, then upload:
 #
 #   python prepare_grpo_dataset.py --out grpo_dataset/
-#   kubectl create configmap grpo-training-scripts -n gai-lina-group \
+#   kubectl create configmap grpo-training-scripts -n gnimpieba-dts-lab \
 #     --from-file=train_grpo_grounding.py=train_grpo_grounding.py \
 #     --from-file=grpo_rewards.py=grpo_rewards.py \
 #     --from-file=prepare_grpo_dataset.py=prepare_grpo_dataset.py
@@ -39,7 +39,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: grpo-rft-paper2
-  namespace: gai-lina-group
+  namespace: gnimpieba-dts-lab
   labels:
     app: grpo-rft-paper2
 spec:

@@ -2,7 +2,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: trajectory-logs-pvc
-  namespace: gai-lina-group
+  namespace: gnimpieba-dts-lab
 spec:
   # ReadWriteMany (not Once): 2026-09-18, running 5 models' full-369-task
   # pilots as concurrent k8s jobs against this same PVC (each model's

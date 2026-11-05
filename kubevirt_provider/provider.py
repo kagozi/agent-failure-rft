@@ -4,7 +4,10 @@ Maps the five abstract methods (desktop_env/providers/base.py) onto a
 KubeVirt VirtualMachineInstance (VMI) running on NRP's Nautilus cluster.
 
 Mechanism, confirmed working end-to-end against namespace "gai-lina-group"
-on 2026-09-11 (see chat history / project memory, not re-derived here):
+on 2026-09-11 (see chat history / project memory, not re-derived here).
+Migrated to namespace "gnimpieba-dts-lab" on 2026-11-04, same cluster
+(Nautilus) -- re-confirmed via `kubectl auth can-i` that this namespace
+also has full CRUD on virtualmachineinstances.kubevirt.io, same as below:
   - KubeVirt v1.7.0 is deployed cluster-wide; this namespace has full CRUD
     on virtualmachineinstances.kubevirt.io.
   - `devices.kubevirt.io/kvm` is advertised on effectively every worker

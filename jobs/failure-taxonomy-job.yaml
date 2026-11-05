@@ -20,16 +20,16 @@
 # a plain python:3.12-slim + a ConfigMap for the script avoids a rebuild.
 #
 # Usage:
-#   kubectl create configmap failure-taxonomy-script -n gai-lina-group \
+#   kubectl create configmap failure-taxonomy-script -n gnimpieba-dts-lab \
 #     --from-file=failure_taxonomy.py=failure_taxonomy.py
 #   kubectl apply -f jobs/failure-taxonomy-job.yaml
-#   kubectl get pods -n gai-lina-group -l app=failure-taxonomy
+#   kubectl get pods -n gnimpieba-dts-lab -l app=failure-taxonomy
 
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: failure-taxonomy-deepseek-v4-flash
-  namespace: gai-lina-group
+  namespace: gnimpieba-dts-lab
   labels:
     app: failure-taxonomy
     model: deepseek-v4-flash
@@ -78,7 +78,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: failure-taxonomy-gemma
-  namespace: gai-lina-group
+  namespace: gnimpieba-dts-lab
   labels:
     app: failure-taxonomy
     model: gemma
@@ -127,7 +127,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: failure-taxonomy-gemma-small
-  namespace: gai-lina-group
+  namespace: gnimpieba-dts-lab
   labels:
     app: failure-taxonomy
     model: gemma-small
@@ -176,7 +176,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: failure-taxonomy-kimi
-  namespace: gai-lina-group
+  namespace: gnimpieba-dts-lab
   labels:
     app: failure-taxonomy
     model: kimi
@@ -225,7 +225,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: failure-taxonomy-qwen3
-  namespace: gai-lina-group
+  namespace: gnimpieba-dts-lab
   labels:
     app: failure-taxonomy
     model: qwen3

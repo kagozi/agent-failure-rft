@@ -15,13 +15,13 @@
 #
 # Usage:
 #   kubectl apply -f jobs/osworld-eval-gemma-small.yaml
-#   kubectl logs -f job/osworld-eval-gemma-small -n gai-lina-group
+#   kubectl logs -f job/osworld-eval-gemma-small -n gnimpieba-dts-lab
 
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: osworld-eval-gemma-small
-  namespace: gai-lina-group
+  namespace: gnimpieba-dts-lab
   labels:
     app: osworld-agent-research
     model: gemma-small
@@ -70,7 +70,7 @@ spec:
               --result_dir /trajectories
           env:
             - name: KUBEVIRT_NAMESPACE
-              value: gai-lina-group
+              value: gnimpieba-dts-lab
             - name: KUBEVIRT_BASE_IMAGE
               value: ghcr.io/kagozi/osworld-ubuntu:latest
             - name: KUBEVIRT_IN_CLUSTER
